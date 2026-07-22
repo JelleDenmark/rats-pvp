@@ -1,0 +1,33 @@
+{
+  "name": "@wrad/core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "balance": "tsx scripts/balance.ts",
+    "balance:depth": "tsx scripts/depth-scaling.ts",
+    "snowball": "tsx scripts/snowball.ts",
+    "balance:day-variance": "tsx scripts/day-to-day-variance.ts",
+    "balance:reroll-fishing": "tsx scripts/reroll-fishing-test.ts",
+    "balance:stress": "tsx scripts/exploit-stress.ts",
+    "balance:all-unit-value": "tsx scripts/all-unit-value.ts",
+    "balance:relic-value": "tsx scripts/relic-value.ts",
+    "balance:dire-rat-armor": "tsx scripts/dire-rat-armor.ts",
+    "balance:economy": "tsx scripts/economy.ts",
+    "balance:maxed-board-guardrail": "tsx scripts/maxed-board-guardrail.ts",
+    "balance:slot-value": "tsx scripts/slot-value.ts",
+    "balance:boss-trial": "tsx scripts/boss-trial-probe.ts",
+    "balance:realistic": "tsx scripts/realistic-player.ts",
+    "balance:combos": "tsx scripts/combo-matrix.ts",
+    "balance:t2-percentiles": "tsx scripts/t2-percentiles.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  }
+}

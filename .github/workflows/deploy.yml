@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          path: prod
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          path: dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Build prod (master)
+        working-directory: prod
+        env:
+          VITE_CHANNEL: prod
+        run: |
+          npm ci
+          npm run build
+      - name: Build dev (dev branch)
+        working-directory: dev
+        env:
+          VITE_CHANNEL: dev
+        run: |
+          npm ci
+          npm run build
+      - name: Assemble site (prod at /, dev at /dev/)
+        run: |
+          mkdir -p site/dev
+          cp -r prod/packages/app/dist/. site/
+          cp -r dev/packages/app/dist/. site/dev/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

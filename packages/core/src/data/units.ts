@@ -1,0 +1,1162 @@
+export type Side = 'horde' | 'gauntlet';
+
+export type Archetype = 'swarm' | 'brute' | 'armored' | 'plague';
+
+/**
+ * Tier (star-level) power multiplier applied to a unit's own base ATTACK
+ * and HEALTH (issue #22). Merging costs scrap super-linearly — 3 copies ->
+ * one t2, 3 t2s -> one t3, i.e. 9x the scrap of a single t1 — so a flat
+ * `x tier` curve (1x/2x/3x) made merging mostly a board-space play, not a
+ * power one. Each tier step is now >=3x the previous step's power: 1x / 3x
+ * / 9x (`3^(tier-1)`), matching the requested factor and the actual scrap
+ * spent. Applied uniformly to attack and health (Jesper, 2026-07-09): the
+ * owner wants a much deeper, more rewarding late-game curve, up to and
+ * including players regularly pushing `WAVE_COUNT = 45` — a full-power
+ * curve on both stats is the intended lever for that, not a limitation to
+ * design around. See `HANDOFF.md`'s compounding-law section before adding
+ * any *new* trigger effect that scales off these bigger numbers.
+ */
+export function tierAttackMultiplier(tier: number): number {
+  return Math.pow(3, tier - 1);
+}
+
+/** Same curve as `tierAttackMultiplier` — see its doc comment. */
+export function tierHealthMultiplier(tier: number): number {
+  return Math.pow(3, tier - 1);
+}
+
+/**
+ * HP a Bone-Priest's `revive` returns the raised ally at, by tier (issue
+ * #53). Deliberately NOT `tierHealthMultiplier` or any other flat multiplier
+ * of a base value — `revive` fires exactly once per Bone-Priest instance
+ * (its own `faint` trigger, which a unit only hits once), so unlike
+ * per-battle-recurring effects there's no compounding risk in a steep,
+ * hand-tuned curve here. A flat `health * tier` (1/2/3) made merging this
+ * unit nearly pointless since the ability only ever pays out once; this
+ * table (1/10/20) makes tiering up actually matter. Callers must still cap
+ * the result at the revived corpse's own `maxHealth` — see the `revive`
+ * case in sim.ts's `applyEffect`.
+ */
+export function reviveHpForTier(tier: number): number {
+  const table = [1, 10, 20];
+  return table[tier - 1] ?? table[table.length - 1];
+}
+
+/**
+ * Number of the front rat's incoming hits Ward-Weaver's `blockFrontHits`
+ * blocks per wave, by tier (issue #56). Same shape as `reviveHpForTier` — a
+ * small explicit table, not a multiplier of a base value — because this
+ * magnitude resets every wave (see the compounding-law note on
+ * `blockCharges` in sim.ts) rather than compounding like `tierAttackMultiplier`.
+ * Deliberately linear (1/2/3), not `tierAttackMultiplier`'s 3^(tier-1) curve:
+ * a wave only has so many meaningful hits to block, so a steep curve here
+ * would just let a t3 Ward-Weaver no-sell an entire early wave.
+ */
+export function blockHitsForTier(tier: number): number {
+  const table = [1, 2, 3];
+  return table[tier - 1] ?? table[table.length - 1];
+}
+
+/**
+ * Poison stacks applied by Plague-Bearer's `poisonLastEnemy` (`startOfWave`,
+ * reworked from `poisonFrontEnemy` in issue #112) and Blight-Witch's
+ * `poisonAllEnemies` (`startOfWave`), by tier (issue #62,
+ * folding in #59's table). Same shape as `reviveHpForTier`/`blockHitsForTier`
+ * — a small explicit table, not a multiplier of a base value.
+ *
+ * Safe under the compounding law for the same reason as `blockHitsForTier`:
+ * poison stacks reset every wave (`waveClear`), so unlike `gainStats` or any
+ * other permanently-accumulating effect on a per-wave trigger, a steep
+ * per-tier jump here cannot snowball across the 45-wave battle — each wave
+ * starts the count fresh.
+ *
+ * Deliberately `[1, 3, 5]`, NOT `tierAttackMultiplier`'s full `3^(tier-1)`
+ * curve (which would give 1/3/9). A full exponential jump would make poison
+ * a dominant, matchup-agnostic answer regardless of enemy archetype —
+ * flat, depth-independent damage that ignores armor and doesn't need to
+ * out-scale enemy health the way attack does. That risk is exactly the
+ * still-open question flagged in `scripts/depth-scaling.ts` report section
+ * "4) Poison-leaning vs attack-leaning roster": poison's flat/depth-independent
+ * nature was left as a report-only, not-yet-resolved finding, not something
+ * to resolve by picking a magnitude here. `[1, 3, 5]` is a moderate,
+ * hand-tuned middle ground between the old flat `stacks * tier` (1/2/3) and
+ * the full exponential curve.
+ */
+export function poisonStacksForTier(tier: number): number {
+  const table = [1, 3, 5];
+  return table[tier - 1] ?? table[table.length - 1];
+}
+
+/**
+ * Hard ceiling on total attack Cellar-Coil's `chargeWhileBenched` may ever
+ * bank onto a single instance, over the WHOLE Ride (all `WAVE_COUNT` = 45
+ * Waves), by tier (issue #106). Same shape as `reviveHpForTier`/
+ * `blockHitsForTier` above — a small explicit table, NOT a multiplier of a
+ * base value — but unlike either of those, this table exists specifically
+ * because ADR-0003 (`docs/adr/0003-compounding-law-for-repeating-triggers.md`)
+ * requires one: `chargeWhileBenched` is a *permanent* stat gain on the
+ * repeating `startOfWave` Trigger, which is exactly the shape that already
+ * shipped once as the Warren-Warden incident (a `startOfBattle` buff
+ * mistakenly re-firing every Wave). It is only safe here because the cap is
+ * a hard `Math.min` clamp baked into the effect's application (see the
+ * `chargeWhileBenched` case in sim.ts's `applyEffect`), not a tunable
+ * suggestion — this function is the one and only source of truth for that
+ * ceiling, and nothing may bank past it no matter how many of the 45 Waves
+ * the unit spends off the front slot.
+ *
+ * Placeholder table `[6, 12, 18]` per issue #106 / `docs/design/future-minions.md`'s
+ * Cellar-Coil writeup — tune the numbers during the balance pass, but the
+ * existence of a hard cap here is not up for debate.
+ */
+export function cellarCoilChargeCapForTier(tier: number): number {
+  const table = [6, 12, 18];
+  return table[tier - 1] ?? table[table.length - 1];
+}
+
+/**
+ * Number of enemies (from the front) Slink-Rat's `backlineDamage` hits per
+ * Wave, by tier (issue #86 merge-scaling follow-up). Deliberately linear
+ * (1/2/3), same shape and same reasoning as `blockHitsForTier`: this magnitude
+ * resets every Wave, so it isn't subject to `tierAttackMultiplier`'s
+ * compounding curve.
+ *
+ * Per-hit damage is deliberately NOT also run through `tierAttackMultiplier`
+ * — see the `backlineDamage` case in sim.ts's `applyEffect` for how the
+ * per-hit amount is computed. Stacking the exponential 1x/3x/9x attack curve
+ * on top of a growing target count would let a single ★3 Slink-Rat output
+ * ~9x today's damage AND spread it across 3 enemies — effectively turning a
+ * "backline sniper" into wave-clearing AOE, which most Gauntlet waves (often
+ * 1-2 enemies) can't survive regardless of front-line investment. Target
+ * count is the sole tier axis instead: reach, not raw magnitude.
+ */
+export function backlineTargetsForTier(tier: number): number {
+  const table = [1, 2, 3];
+  return table[tier - 1] ?? table[table.length - 1];
+}
+
+export type Effect =
+  | { kind: 'summon'; unitId: string; count: number }
+  /**
+   * Rat-Piper's maintenance summon (issue #105 rework). Unlike `summon`,
+   * which adds `count * tier` fresh bodies every time it fires, this TOPS UP
+   * to a target of `count * tier` living pups that THIS caster owns
+   * (tracked via `BattleUnit.summonedBy`): it re-summons only the shortfall,
+   * summoning nothing when its litter is already full. That bounds a
+   * per-wave (`startOfWave`) summoner's PERMANENT body contribution at the
+   * source — at most `count * tier` pups, ever — instead of accumulating a
+   * fresh litter every wave. This is the ADR-0003 rule that lets the global
+   * combat cap (`COMBAT_CAP_BONUS`) rise to fit Brood-Mother's cascade
+   * without a per-wave summoner turning that headroom into a runaway board.
+   * Any FUTURE per-wave summoner must be self-bounded this way (or with a
+   * hard per-instance cap like `cellarCoilChargeCapForTier`).
+   */
+  | { kind: 'maintainSummons'; unitId: string; count: number }
+  /**
+   * Squeak-Sensei (issue #133) — the swarm archetype's first payoff. Wired to
+   * the new `allySummoned` trigger: whenever an ally is summoned onto this
+   * side, the NEWLY-SUMMONED body enters with `+attack/+health`, scaled
+   * LINEARLY by the Sensei's tier (`* tier`, 1/2/3 — the shallow gainStats
+   * curve, NOT `tierAttackMultiplier`'s 3^(tier-1)): the trigger repeats
+   * every summon of every wave, and a repeating trigger must not also get an
+   * exponential per-tier multiplier (same rationale as `chargeWhileBenched`
+   * and `blockHitsForTier`).
+   *
+   * Compounding-law note (ADR-0003, per issue #133's sign-off): safe BY
+   * CONSTRUCTION because the buff lands only on the summoned body — a fresh
+   * instance each time, buffed exactly once at birth. Nothing accumulates on
+   * any persistent unit: the Sensei itself and its permanent teammates are
+   * never targets, so total injected power is bounded by summon count (which
+   * the combat headroom already caps per wave), not by wave count on one
+   * body. The DANGEROUS variant the issue flags — buffing the summoner or
+   * the board per summon — is exactly the Warren-Warden shape and must not
+   * be built without a Cellar-Coil-style hard cap; keep the target the
+   * newcomer. Fired from the `summon` resolution path only — a `revive` is
+   * a raising, not a summoning, and deliberately does NOT fire this.
+   */
+  | { kind: 'buffSummoned'; attack: number; health: number }
+  /**
+   * Steel-Whisker (issue #134) — thorns, the game's first on-hurt reaction.
+   * Wired to the new `onHurt` trigger: when a clash blow actually lands on
+   * this unit (a Ward-Weaver-blocked hit never counts — it was absorbed
+   * before touching the body, and poison is rot, not a blow), it deals
+   * `damage * tier` (linear 1/2/3, repeating-trigger rationale as above)
+   * back to the enemy it clashed with. The reflect is a normal 'attack' hit
+   * on the attacker, so the attacker's own armor blunts it and the
+   * MIN_ATTACK_DAMAGE floor applies — bristles cut, hide still helps.
+   *
+   * Compounding-law note (ADR-0003): STATELESS — a fixed per-hit
+   * contribution against enemies that are re-instantiated every wave, so
+   * nothing carries across the 45-wave ride (same bound as poison and
+   * `backlineDamage`). The dangerous cousin the issue flags — "when hurt,
+   * GAIN stats" — is an unbounded per-tick snowball on the front slot and
+   * must never ship without a hard cap + its own canary. Ship reflect only.
+   */
+  | { kind: 'reflectDamage'; damage: number }
+  /**
+   * Grave-Leech (issue #135) — sustain; the first unit-side heal (the only
+   * other heal in the game is Fat Tick's relic `healPerTick`). Wired to
+   * `afterAttack`: each clash this unit SURVIVES, it drinks `amount * tier`
+   * (linear 1/2/3, repeating-trigger rationale as above) back. The clamp at
+   * `maxHealth` lives in the effect application in sim.ts (per the issue:
+   * in the effect, not left to the caller), and a unit at 0 or less health
+   * never heals — the faint is already owed, drains don't cheat death.
+   *
+   * Compounding-law note (ADR-0003): safe for free — healing clamps at
+   * `maxHealth` (same reason `revive`/`reviveHpForTier` is safe), so there
+   * is no unbounded accumulation no matter how many of the 45 waves it
+   * fights. Balance coupling: the Fat Tick retire/re-scope decision (issue
+   * #135) must be tuned TOGETHER with this drain magnitude — both stack on
+   * one front rat today.
+   */
+  | { kind: 'healSelf'; amount: number }
+  /**
+   * Gutter-Acolyte (issue #137) — the first enemy-STAT debuff (poison races
+   * enemy health; nothing before this lowered the incoming number itself).
+   * Wired to `startOfWave`, same firing point as `poisonAllEnemies`: saps
+   * `attack * tier` (linear 1/2/3) from EVERY living enemy in the wave,
+   * floored at MIN_ATTACK_DAMAGE so a stack of Acolytes can never zero-out
+   * a wave (enemies still hit for at least 1, mirroring the armor rule).
+   * Whole-line, not front-only, by design: a front-only shred inherits the
+   * exact "the front enemy was dying to the clash anyway" dead-weight
+   * problem that forced Plague-Bearer's #112 rework — flagged for Jesper's
+   * sign-off along with the magnitude.
+   *
+   * Compounding-law note (ADR-0003): safe — enemies are re-instantiated
+   * fresh every wave, so a stat debuff cannot carry across the 45-wave ride
+   * (identical bound to `poisonAllEnemies`). Multiple Acolytes stack
+   * additively within a wave, bounded by board size AND by the floor; if
+   * that stacking still probes too strong, cap it per-wave like the
+   * poison-all budget (#116) — noted, not pre-built.
+   */
+  | { kind: 'weakenAllEnemies'; attack: number }
+  /**
+   * Buffs the rat(s) behind the source (or `all` of them) by
+   * `attack`/`health`, scaled by `tierAttackMultiplier`/`tierHealthMultiplier`
+   * (issue #58) rather than a flat `* tier` — Gnawer wires this to `faint`,
+   * Warren-Warden and MD Rattyfock wire it to `startOfBattle`; both trigger
+   * kinds fire exactly once per unit instance, ever, so the steeper
+   * `3^(tier-1)` curve can't accumulate across the 45-wave battle the way a
+   * per-wave-recurring effect could (see the compounding-law note above the
+   * `Ability` interface). A flat `* tier` left tiering these units up nearly
+   * pointless since the payout only ever lands once — same rationale as
+   * `reviveHpForTier`.
+   */
+  | { kind: 'buffBehind'; attack: number; health: number; all?: boolean }
+  /**
+   * Gnawer's rework (issue #111). Unlike `buffBehind`'s flat `effect.attack`
+   * literal, this effect carries NO magnitude of its own — the payout is a
+   * LIVE reference to the caster's own `attack` stat at the instant it
+   * faints (already tier-scaled via `tierAttackMultiplier` and inflated by
+   * any attack relics/team-buffs — whatever it actually had when it fell,
+   * read straight off `BattleUnit.attack` in sim.ts), plus a bonus for the
+   * wave number it died on. Old Gnawer's flat `+2` never aged past wave 1;
+   * this makes both "how strong was this body" and "how late did it die"
+   * matter, which is the point of the rework (see the issue's "placement
+   * puzzle": front slot dies early for a small bonus but has everyone
+   * behind it to benefit, deep slot dies late for a big bonus but only
+   * helps the one rat behind it, and the last slot has nobody behind at
+   * all — the payout simply evaporates).
+   *
+   * `waveBonusCapMultiplier` caps the WAVE-DIED-ON bonus at
+   * `waveBonusCapMultiplier * ownAttack` (proposed 2x — Jesper 2026-07-15,
+   * open for tuning) so a t1 chaff Gnawer can't out-scale its own body just
+   * by surviving deep into a 45-wave grind. This cap lives HERE, in the
+   * def/effect data, not as a loose comment or a hand-picked literal at the
+   * call site — see docs/design/future-minions.md's Cellar-Coil writeup for
+   * why an uncapped "reward for surviving/waiting" magnitude is exactly the
+   * shape of an instant exploit, and `blockHitsForTier`/`poisonStacksForTier`
+   * above for the house style of keeping magnitude tables in data, not code.
+   *
+   * Compounding-law note: `faint` fires on EVERY death (see
+   * `resolveDeaths` in sim.ts), not just the first, so a Bone-Priest-revived
+   * Gnawer that dies a second time fires this a second time. That is still
+   * bounded, not a loop: `revive` is capped to once per corpse (the
+   * `raised` flag — see the `revive` case in sim.ts), so a single Gnawer
+   * copy can pay out at most twice per battle (the second payout later and
+   * therefore larger, since the wave-died-on bonus grows with wave number).
+   * The wave bonus itself never accumulates per-wave — it's read once, at
+   * the moment of death, capped by `WAVE_COUNT` (45) same as any other
+   * one-shot per-instance magnitude in this file (`reviveHpForTier`,
+   * `buffBehind`'s fire-once reasoning). See the targeted double-payout
+   * probe in compounding-law.test.ts.
+   */
+  | { kind: 'bequeathAttack'; waveBonusCapMultiplier: number }
+  /**
+   * Buffs BOTH board neighbors (index-1 and index+1), whichever exist. At
+   * the front only the "behind" neighbor exists; at the back only the
+   * "front" neighbor exists; a middle placement hits both — the first
+   * effect in the game where being in the middle is strictly better than
+   * an edge. See `buffAdjacent`'s application in sim.ts for the
+   * compounding-law note (it's `startOfBattle`-gated, same shape as
+   * `buffBehind` on Warren-Warden). Magnitude scales via
+   * `tierAttackMultiplier`/`tierHealthMultiplier` (issue #58), same
+   * fire-once reasoning as `buffBehind`.
+   */
+  | { kind: 'buffAdjacent'; attack: number; health: number }
+  /**
+   * Pack-Caller rework (issue #88 follow-up, 2026-07-16 — replaces the
+   * original `buffAdjacentByTribe`). Jesper's read: the original ability was
+   * mechanically a lazy Press-Kin clone (identical "both neighbors, best in
+   * the middle" targeting via `buffAdjacent`), differing only by a magnitude
+   * multiplier keyed off `UnitDef.tribe` — a tag the UI never surfaces
+   * anywhere, so the two units read as interchangeable and the actual
+   * winner was invisible board trivia, not a real player choice.
+   *
+   * This version drops the tribe dependency entirely and changes the shape:
+   * `faint`-triggered (not `startOfBattle`), it gives away its OWN CURRENT
+   * attack and max health — tier-scaled, relic-buffed, and inflated by
+   * whatever startOfBattle buffs it happened to receive (Warren-Warden,
+   * the Forgotten Backpack relic, ...) — split EVENLY across every other
+   * living teammate, with any remainder (stat % survivor-count) going one
+   * point each to the FRONTMOST survivors first. `receiveCapMultiplier`
+   * (below) is the one tunable number on this effect (unlike
+   * `buffBehind`/`teamBuff`'s literal `attack`/`health`, the payout ITSELF
+   * is always exactly the caster's own live stat line, never a separate
+   * literal) — see the sim.ts case for exactly which fields that reads.
+   *
+   * Compounding-law note (corrected 2026-07-17 — the previous version of
+   * this note was simply wrong; see below): `faint` fires on EVERY death,
+   * not just the first (`resolveDeaths` in sim.ts), so a Bone-Priest-revived
+   * Pack-Caller that dies a second time pays out again — same shape as
+   * Gnawer's `bequeathAttack`. Revive is capped once per corpse, so a single
+   * Pack-Caller instance can pay out at most twice per battle, same bound
+   * Gnawer relies on. Using the LIVE (buffed) value rather than a fixed base
+   * is safe for the same reason it's safe there: every effect that could
+   * have inflated this unit's stats first (buffBehind, teamBuff, relics,
+   * revive itself, ...) is itself already fire-once/bounded under ADR-0003,
+   * so even a twice-paid-out snapshot is bounded — it just varies with board
+   * synergy, which is the intended payoff for building around it. Measured
+   * impact of the revive double-payout on a 6× Pack-Caller + Bone-Priest
+   * board (pre-`receiveCapMultiplier` fix below): a modest ~10-18% higher
+   * peak single-unit attack than the same board without Bone-Priest — not
+   * degenerate on its own.
+   *
+   * A board with several Pack-Callers CAN chain — one's payout can inflate
+   * the live stats a later one gives away when it too falls — bounded by
+   * (up to) twice the board's own size given the revive interaction above,
+   * not by wave count or ride length, AND now further bounded in aggregate
+   * by `totalBudgetMultiplier` below. Zero survivors (last unit standing) is
+   * a no-op, not a crash.
+   *
+   * PAYOUT-CONCENTRATION fix, v1 — RECEIVER-side cap (issue #131, shipped
+   * 2026-07-17, replaced same day): the real Boss Trial risk was never
+   * Pack-Caller-buffing-Pack-Caller — it was PAYOUT CONCENTRATION as a board
+   * thins: as fewer survivors remain, each subsequent faint's split lands on
+   * a shrinking pool, letting a late "sink" unit (which need not be another
+   * Pack-Caller — Corpse-Glutton or even a plain Dire-Rat reproduces it)
+   * accumulate enough attack/health to tank far more escalating-attack Boss
+   * Trial phases than the design assumes — reproduced hitting
+   * `BOSS_TRIAL_MAX_PHASES` (the trial's hard safety cap, which
+   * boss-trial.ts's own comment calls a bug signal, not a valid outcome),
+   * highly sensitive to board ORDER (identical units/tiers scored 7 vs. 60
+   * phases depending purely on ordering). The first fix capped what ANY
+   * single recipient could absorb, tuned empirically against Jesper's actual
+   * reported board (4x Pack-Caller + Warren-Warden + Ward-Weaver, screenshot
+   * 2026-07-17) down to `receiveCapMultiplier: 1` (3x and 1.5x barely moved
+   * it — Warren-Warden's own base stats are already large at tier 3, so a
+   * multiple of THAT stayed enormous), which did bring the reported board to
+   * 10 phases, in line with ordinary strong boards (7-9). But on review
+   * (Jesper, 2026-07-17) this flattened the card's actual strategic choice:
+   * anchoring the cap to each recipient's own (small, early) stats meant
+   * positioning Pack-Caller to die LATE — banking a big payout to dump on
+   * 1-2 chosen units, the card's other intended play pattern alongside early
+   * broad-spread — mostly wasted the payout once survivors thinned, since
+   * the accumulated total vastly exceeded any individual recipient's cap.
+   * Early-spread became the only non-wasteful line, which wasn't the intent.
+   *
+   * PAYOUT-CONCENTRATION fix, v2 — SOURCE-side shared budget (shipped same
+   * day, replacing v1): instead of capping what one recipient can absorb,
+   * cap the TOTAL this effect can move per side over the WHOLE battle,
+   * shared across every Pack-Caller on that side — same cap-not-sum idiom as
+   * the poison-all/Plague-Bearer caps (`poisonAllApplied`/`poisonLastApplied`
+   * in sim.ts), just scoped to the whole battle instead of one wave, since
+   * this exploit plays out across many separate waves as a board thins, not
+   * within one. Budget = `totalBudgetMultiplier` × a single tier-3
+   * Pack-Caller's own base attack/health (see the sim.ts case for the exact
+   * accounting) — sized the same way `poisonStacksForTier(3)` sizes the
+   * poison-all cap: "worth of one strong instance," not tied to whichever
+   * unit happens to receive it. This preserves the actual choice (spread
+   * early across a full board, or bank it and dump it all on 1-2 units
+   * late) since it doesn't care WHO receives, only how much this ability can
+   * inject over a ride in total. Overflow past the remaining budget is
+   * simply lost when the dying unit's own total is clipped, before the
+   * (possibly-reduced) total is split — not redistributed to a later death,
+   * same "clip, don't reroute" shape as everywhere else in this file.
+   * `totalBudgetMultiplier` value: tentative pending Jesper's balance
+   * sign-off like every other new magnitude in this file — re-verify against
+   * the same reported board before trusting a specific number.
+   */
+  | { kind: 'distributeStatsOnFaint'; totalBudgetMultiplier: number }
+  | { kind: 'poisonFrontEnemy'; stacks: number }
+  /**
+   * Plague-Bearer (issue #112, reworked from `poisonFrontEnemy`). Poisons
+   * `enemies[enemies.length - 1]` — the back of the enemy line — instead of
+   * the front. Stack count is NOT carried on the effect — same as its
+   * siblings, it's looked up per-tier via `poisonStacksForTier` (1/3/5) at
+   * apply time; this rework only moves WHERE the stacks land, never how
+   * many. Always wired to `startOfWave` (unchanged): fires for every
+   * Plague-Bearer regardless of board slot, landing before the wave's
+   * been chipped by combat, same reasoning as Blight-Witch's
+   * `poisonAllEnemies`.
+   *
+   * Rationale (issue #112): Plague-Bearer was strictly dominated by
+   * Blight-Witch — same stack table, one enemy vs. the whole line, and the
+   * front enemy it poisoned was usually dying to the clash anyway. Reaching
+   * the back of the line instead pre-rots a protected backline threat
+   * before the front-to-back grind gets there, giving the plague tribe two
+   * distinct roles (Witch rots wide, Bearer reaches deep).
+   *
+   * Degenerate case: a single-enemy wave has last === front, so this
+   * behaves exactly like `poisonFrontEnemy` did — no special-casing needed.
+   *
+   * Compounding-law note: enemies are re-instantiated every wave and
+   * poison never carries across waves (`waveClear`'s antidote, plus
+   * enemies simply not existing yet next wave), so this cannot accumulate
+   * across the 45-wave battle. Multiple Plague-Bearers stack additively
+   * within a single wave (each re-applies `poisonStacksForTier(tier)` to
+   * the same last enemy) — bounded by fresh enemies next wave, not a
+   * persistent-horde compounding vector.
+   */
+  | { kind: 'poisonLastEnemy' }
+  | { kind: 'poisonTarget'; stacks: number }
+  /**
+   * Blight-Witch (issue #62). Poisons every living enemy currently on the
+   * board, not just the front one — the first effect in the game to hit the
+   * whole opposing wave at once. Stack count is NOT carried on the effect —
+   * it's looked up per-tier via `poisonStacksForTier` at apply time, same
+   * pattern as `revive`'s `reviveHpForTier` lookup. Always wired to
+   * `startOfWave` (never `afterAttack`): `afterAttack` only fires for
+   * whichever unit is currently front, which both wasted this effect on an
+   * enemy already dying from the clash and left a back-line Blight-Witch
+   * dead weight. `startOfWave` fires for every unit regardless of board
+   * slot and lands on the whole wave before it's been chipped by combat.
+   *
+   * Compounding-law note: enemies are re-instantiated every wave and
+   * poison never carries across waves (see `waveClear`'s antidote, and
+   * enemies simply not existing yet next wave), so this cannot accumulate
+   * across the 45-wave battle.
+   *
+   * Multi-caster cap (issue #116): Blight-Witches used to stack ADDITIVELY
+   * within a wave (each re-applying `poisonStacksForTier(tier)` to every
+   * enemy), which drove RatMoe's depth-45 3× board. That stacking is now
+   * capped — the TOTAL poison-all stacks landed on the enemy side per wave
+   * is clamped to `poisonStacksForTier(3)` (see the `poisonAllApplied`
+   * budget and the `poisonAllEnemies` case in sim.ts). A lone ★3 or two ★2s
+   * are essentially unaffected; a stack of three-plus casters is not. Each
+   * caster's own per-tier value is untouched — the cap lives in the sim's
+   * per-wave accounting, mirroring Ward-Weaver's `blockCharges` cap-not-sum.
+   */
+  | { kind: 'poisonAllEnemies' }
+  | { kind: 'gainStats'; attack: number; health: number }
+  /**
+   * Cellar-Coil (issue #106; "positional patience" in
+   * `docs/design/future-minions.md`). Sibling to `gainStats` above, but
+   * deliberately NOT the same shape: `gainStats` is uncapped and only ever
+   * safe today because its one wired-up trigger (`allyFaint`) is implicitly
+   * bounded by how many allies can faint in a battle. This effect is wired
+   * to `startOfWave` — a repeating Trigger — gated by the new
+   * `Ability.condition.notFront` (fires only on Waves the unit survives
+   * while NOT at board index 0), which is exactly the shape ADR-0003 (see
+   * `docs/adr/0003-compounding-law-for-repeating-triggers.md`) flags as
+   * needing an explicit hard cap: the same permanent-per-wave-gain shape
+   * that shipped as the Warren-Warden incident. It is only safe here
+   * because the grant is HARD-CAPPED by construction, not a suggestion:
+   *
+   *   - Per-wave grant is `effect.attackPerWave * tier` — deliberately
+   *     LINEAR tier scaling (1/2/3), not `tierAttackMultiplier`'s
+   *     exponential `3^(tier-1)` — same rationale as `blockHitsForTier`'s
+   *     doc comment: an accumulating per-wave effect must not also get an
+   *     exponential per-tier multiplier, or the cap becomes meaningless at
+   *     tier 3.
+   *   - The grant is clamped in sim.ts's `applyEffect` (`chargeWhileBenched`
+   *     case) to `Math.min(effect.attackPerWave * tier, cap - source.chargeStacks)`,
+   *     where `cap` comes from `cellarCoilChargeCapForTier(tier)` — see that
+   *     function's doc comment for the full sign-off. Once `chargeStacks`
+   *     reaches the cap the ability is a silent no-op every subsequent Wave,
+   *     not an error — there is no code path that lets it exceed the cap.
+   *   - `chargeStacks` lives on `BattleUnit` (see its declaration in sim.ts,
+   *     next to `raised`/`startOfBattleFired`) and persists across every
+   *     Wave of the whole Ride the same way those fields do, so the cap is a
+   *     true ceiling on total attack ever banked over all `WAVE_COUNT` (45)
+   *     Waves, not just one Wave or one Battle.
+   *
+   * No health is granted by this effect — only attack accumulates, matching
+   * the design bank's text; the unit's base `health` is its only durability
+   * lever while it waits to bank charge.
+   *
+   * Enemy-side note (ADR-0004): the same effect is technically available to
+   * an Enemy for free, but degenerates to near-harmless there — Enemies are
+   * re-instantiated fresh every Wave and `fireEntryTriggers` only runs once
+   * per Wave, so an Enemy copy could bank at most one grant before the Wave
+   * ends and it ceases to exist; it can never reach anywhere near the cap.
+   * This is intentional, not an oversight — see ADR-0004
+   * (`docs/adr/0004-enemies-share-the-unit-engine.md`) — nobody should "fix"
+   * this into carrying Enemy state across Waves.
+   */
+  | { kind: 'chargeWhileBenched'; attackPerWave: number }
+  /**
+   * HP is NOT carried on the effect — it's looked up per-tier via
+   * `reviveHpForTier` at apply time (issue #53), then capped at the
+   * revived corpse's own `maxHealth`. See `reviveHpForTier`'s doc comment
+   * for why a steep table is safe here despite the compounding law.
+   */
+  | { kind: 'revive' }
+  /**
+   * Ward-Weaver (issue #56). Grants this side a per-wave pool of "block the
+   * next incoming hit to whichever unit is currently front" charges, sized
+   * by `blockHitsForTier(tier)` (1/2/3). Always wired to `startOfWave`, and
+   * the pool is reset to 0 at the top of every wave before this fires — see
+   * `blockCharges` in sim.ts for the full compounding-law note and the
+   * `Math.max` (never summed) anti-stacking rule for multiple Ward-Weavers.
+   */
+  | { kind: 'blockFrontHits' }
+  /**
+   * Backline damage path (issue #85; "Slink-Rat option B" in
+   * `docs/design/future-minions.md`). The reusable primitive behind future
+   * backline snipers: a non-front unit adds its own current `attack`
+   * directly to the frontmost enemy, once per wave, taking no retaliation
+   * (it isn't the one clashing — see `blockFrontHits`'s "front" targeting
+   * for contrast, which this deliberately bypasses). Always wired to
+   * `startOfWave`, same firing point as `poisonFrontEnemy`/`blockFrontHits`,
+   * so it lands before the tick loop's clash/poison resolution even begins
+   * for that wave (see the `backlineDamage` case in sim.ts's `applyEffect`
+   * for the full ordering rationale against Marrow-Snap, Ward-Weaver, and
+   * Gore-Cleaver).
+   *
+   * Compounding-law note: this is a FIXED, non-accumulating per-wave
+   * contribution — each living non-front carrier deals its current attack
+   * once at that wave's start, then nothing more until the next wave's
+   * `startOfWave` fires again. It does not grow with tick count, wave
+   * count, or anything other than the unit's own (tier-scaled) attack stat,
+   * and multiple carriers stack only additively, bounded by however many
+   * non-front slots the board cap allows — the same "safe because bounded
+   * by board size" shape as `poisonAllEnemies`'s multi-caster stacking.
+   */
+  | { kind: 'backlineDamage' }
+  /**
+   * Whole-team stat grant (issue #12: Dawn-Runt/Dusk-Runt) — every horde unit
+   * currently on the board gets `+attack`/`+health`, including the caster
+   * itself (unlike `buffBehind`, which deliberately excludes the caster —
+   * see Warren-Warden). Only ever wired to a `startOfBattle` trigger, so it
+   * fires once per unit instance, ever, exactly like Warren-Warden's
+   * `buffBehind`, and cannot compound across the 45-wave battle. Magnitude
+   * scales via `tierAttackMultiplier`/`tierHealthMultiplier` (issue #58)
+   * instead of a flat `* tier`, same fire-once reasoning as `buffBehind`/
+   * `buffAdjacent` above. See the `condition` field on `Ability` for how
+   * this pairs with a time-of-day gate.
+   */
+  | { kind: 'teamBuff'; attack: number; health: number }
+  /**
+   * Twilight-Runt (issue #110; wave-based rework, 2026-07-16) — single-unit
+   * fusion of Dawn-Runt/Dusk-Runt, replacing the pair's "dead half of the
+   * day" problem. The FIRST version of this fix (`teamBuffByTime`, removed)
+   * picked one of two magnitude sets from the real-world wall-clock half of
+   * the day the battle started in (`Lineup.timeOfDay`). That fixed the
+   * original "which unit do I bring" dead-card problem, but created two new
+   * ones: the split was invisible to the player (decided by the clock, not
+   * a choice they made), and it collided with Boss Trial's fixed 20:00 CET
+   * fight always resolving to the same half — a structural, permanent zero
+   * on one identity axis in that mode (see git history on this comment for
+   * the full "Option 1" floor-magnitude fight that bought back from that
+   * hard zero; superseded by this rework, not worth carrying forward).
+   *
+   * This version drops the wall clock entirely and keys the split to the
+   * IN-BATTLE wave count instead — `startOfWave`-triggered (fires every
+   * wave, for every unit — see `fireEntryTriggers`), not `startOfBattle`.
+   * Two independent grants, each landing at most ONCE per unit instance,
+   * ever, gated by `BattleUnit.waveBuffPhase` (see its declaration in
+   * sim.ts): the `early` dose fires the first wave this unit is alive for,
+   * the `late` dose fires the first wave `currentWave >= switchWave` holds.
+   * ADDITIVE, not a swap — the early dose is never revoked, so a battle that
+   * reaches `switchWave` ends up with BOTH doses summed. This is
+   * deliberately simpler (and cheaper to prove safe) than a
+   * revoke-and-reapply swap: no bookkeeping of who currently holds which
+   * buff, no risk of clawing back a grant from a unit that never actually
+   * received it (e.g. a pup summoned after the early dose already fired).
+   *
+   * Compounding-law check: each of the two grants is gated by its own
+   * fire-once transition on `waveBuffPhase` ('none' -> 'early' -> 'both'),
+   * the same invariant class as `startOfBattleFired` elsewhere in this
+   * file — once a unit instance reaches 'both', neither branch in the
+   * `teamBuffByWave` case can ever fire again for it, so total granted
+   * power over the whole 45-wave battle is bounded by `early + late`,
+   * never more, no matter how many waves are left to run.
+   *
+   * This also fixes the Boss Trial dead-axis bug at the root instead of
+   * patching around it: Trial reuses `simulate` unmodified with phase=wave
+   * (see boss-trial.ts), so `currentWave` is just as real there as on a
+   * normal ride — a Trial run that survives to phase `switchWave` gets the
+   * late dose exactly like a ride would, no fixed-hour blind spot possible.
+   * Weaker boards that die before `switchWave` simply never see the late
+   * dose in EITHER mode — an intentional "you have to survive to earn the
+   * survival buff" shape, not a bug.
+   *
+   * MAGNITUDES (balance pass run 2026-07-18, this rework's required gate):
+   * early {attack: 2, health: 1}, late {attack: 1, health: 1}, switchWave
+   * 15, cost 6. Deliberately NOT a straight carryover of the old {3,1}/
+   * {1,2} halves — those summed to a single dose per battle; here both
+   * eventually land in the SAME battle, so each was cut down to keep total
+   * late-battle power in the same neighborhood rather than doubling it.
+   * The pass measured (PR #123 has the full tables):
+   *   - all-unit-value at cost 6: 20.4/12.4/6.9 waves-per-100-scrap, ranks
+   *     #1/#1/#3 — TAMER than the time-blend version's all-#1 22.7/12.8/8.1
+   *     profile that cost 6 was originally set against. Cost 6 stands.
+   *   - switchWave 15 fires for real boards, not just in theory: the
+   *     realistic-player lookahead rides avg 22-27 waves from day 3 on, and
+   *     on a census-style day-7 t2+relics board a BACK-seat Runt survives
+   *     past wave 15 in ~100% of rides (late dose worth +0.93 waves there,
+   *     shipped vs early-only). Lowering switchWave to 10-12 mostly buffs
+   *     the tier-list's weak probe boards (T3 depth eff 6.9 -> 9.4-10.2,
+   *     back to runaway-#1) while adding only +0.3 waves for strong boards
+   *     — worse balance for no identity gain. 15 stands.
+   *   - Dose shape: back-loading ({1,1}/{2,1}) measured strictly worse at
+   *     every tier on every metric; early-heavy is correct.
+   *   - Boss Trial: real Trial boards top out ~8 phases, so the late dose
+   *     effectively never fires there at any sane switchWave — accepted:
+   *     the EARLY dose always fires, so no mode has a dead-card axis (the
+   *     root bug this rework fixes), and the compounding-law bound means
+   *     Trial contribution was always going to be modest.
+   *   - Seat value on a realistic day-7 board: +2.5 waves vs a mid-adoption
+   *     alternative seat — second to Ward-Weaver's +5.9, i.e. strong but
+   *     not the outlier the pre-#127 tooling had hidden.
+   */
+  | { kind: 'teamBuffByWave'; early: { attack: number; health: number }; late: { attack: number; health: number }; switchWave: number };
+
+/**
+ * Real-world half-day bucket, Copenhagen local time (issue #12) — matches the
+ * existing Monday 06:00 CET season-reset convention. Resolved by the app
+ * layer from the wall clock and threaded in via `Lineup.timeOfDay`;
+ * `simulate` itself never reads `Date.now()`/`new Date()`, so this stays
+ * fully deterministic for tests and golden logs (they pass, or omit,
+ * `timeOfDay` explicitly).
+ */
+export type TimeOfDay = 'beforeNoon' | 'afterNoon';
+
+/**
+ * `startOfBattle` fires **once per unit instance, ever** — on the first wave
+ * that unit is present for. `startOfWave` fires at the top of **every** wave.
+ *
+ * The distinction is load-bearing. `simulate` runs 45 waves against one
+ * persistent horde, so any *permanent* effect on a per-wave trigger compounds
+ * ~45× without bound: four tier-3 Warren-Wardens re-buffing "+1/+1 to all
+ * behind" every wave took a 6-attack rat to 241 and full-cleared the gauntlet.
+ * Rule of thumb: **`startOfWave` is only for effects that do not accumulate** —
+ * summoning a body that will die, re-applying poison that clears at `waveClear`.
+ * Anything that permanently raises a stat belongs on `startOfBattle`.
+ *
+ * Enemies are re-instantiated every wave, so their `startOfBattle` abilities
+ * still fire each wave for free — the per-instance flag makes this automatic.
+ *
+ * Ward-Weaver's `blockFrontHits` (issue #56) used to be a bespoke
+ * per-attack-tick trigger (`watchFrontAttack`), removed once its mechanic
+ * changed from "every Nth attack landed" to "block the first N hits each
+ * wave" — that reset-every-wave shape is exactly what `startOfWave` is for,
+ * so it no longer needs its own trigger kind. See `blockCharges` in sim.ts.
+ */
+export interface Ability {
+  /**
+   * `allySummoned` (issue #133) fires from the `summon` resolution path in
+   * sim.ts — once per newly-summoned ally body, for every OTHER living unit
+   * on that side that carries it, with the newcomer as the effect's target
+   * (the summoned body never witnesses its own arrival). A `revive` is not
+   * a summon and never fires it.
+   *
+   * `onHurt` (issue #134) fires from the clash tick in sim.ts — when a
+   * clash blow actually lands on this unit while it is the front (a
+   * Ward-Weaver-blocked hit was absorbed and does not count; poison ticks,
+   * `backlineDamage`, and relic burst (Weeping Boil) are not clash blows and
+   * never fire it), with the attacker as the effect's target. Both are
+   * TARGETED triggers: their effects need a target reference threaded in,
+   * so they resolve through `applyTargetedEffect` in sim.ts rather than the
+   * positional `applyEffect` path every other trigger uses.
+   */
+  trigger: 'startOfBattle' | 'startOfWave' | 'faint' | 'afterAttack' | 'allyFaint' | 'allySummoned' | 'onHurt';
+  effect: Effect;
+  /**
+   * Gate the ability's firing on the real-world half of the day the ride
+   * belongs to (issue #12). Evaluated against `Lineup.timeOfDay` at the same
+   * point the trigger itself would otherwise fire (see `fireEntryTriggers` in
+   * sim.ts) — a `startOfBattle` ability still only ever gets its one shot per
+   * unit instance, it just no-ops that shot when the condition doesn't match,
+   * rather than retrying on a later wave.
+   *
+   * `notFront` (issue #106: Cellar-Coil) gates firing on the unit's own board
+   * position that Wave: true only on Waves where the unit is present but NOT
+   * at index 0 (the clashing slot). Evaluated in `fireEntryTriggers`
+   * alongside `timeOfDay`, using the same `index` that function already
+   * computes before calling `applyEffect` — a `startOfWave` ability still
+   * fires every Wave the unit survives, it just no-ops on any Wave the unit
+   * is currently front. Siblings, not mutually exclusive in the type, but no
+   * current unit combines both.
+   */
+  condition?: { timeOfDay?: TimeOfDay; notFront?: boolean };
+}
+
+export interface UnitDef {
+  id: string;
+  name: string;
+  attack: number;
+  health: number;
+  cost: number;
+  archetype?: Archetype;
+  ability?: Ability;
+  /**
+   * Flat armor: subtract this from every incoming **attack** hit (scaled by
+   * tier, like every other magnitude). Poison bypasses it — armor doesn't stop
+   * rot. A hit always lands for at least 1, so armor can never make a unit
+   * immortal (cf. the Bone-Priest self-revive lesson). Strong against swarms of
+   * small hits, near-useless against brutes.
+   */
+  damageReduction?: number;
+  /**
+   * Day-gated shop availability (issue #12), same mechanism as
+   * `boardCapForDay` — a pure function of the expedition day, no new
+   * per-account state. Absent = available from day 1 (every pre-existing
+   * unit). Once a unit's `unlockDay` is reached it stays in the pool for
+   * every later day too — this is not a day-exclusive appearance.
+   */
+  unlockDay?: number;
+  /**
+   * Build-around tag (issue #88: Pack-Caller). Originally the count Pack-
+   * Caller's `buffAdjacentByTribe` scanned the board for; that ability was
+   * reworked away from tribe entirely (2026-07-16 — see
+   * `distributeStatsOnFaint`'s doc comment), so this is now PURELY
+   * DESCRIPTIVE on every unit, including Pack-Caller — nothing reads it
+   * mechanically. Optional and freeform-ish (kept to a small fixed
+   * vocabulary in practice: "runt", "plague", "brute", "swarm"); a unit with
+   * no obvious kinship gets no tag rather than a forced one. Tagging is a
+   * subjective flavor read — see the tagging rationale next to `UNIT_DEFS`
+   * below and the PR description for issue #88.
+   */
+  tribe?: string;
+  /**
+   * Day-gated shop retirement (issue #108/#109), mirror of `unlockDay` —
+   * same pure-function-of-day mechanism, no new per-account state. Absent =
+   * never retires (every pre-existing unit). Once `retireDay` is reached the
+   * unit leaves the *shop pool* for every later day too (`shopUnitPoolForDay`
+   * filters to `unlockDay <= day < retireDay`, both optional). This only
+   * gates shop ROLLS: the `UNIT_DEFS` entry stays intact forever (golden
+   * logs/replays/determinism tests reference ids directly) and any
+   * already-owned copy keeps fighting untouched. See `sellRefund` in
+   * shop.ts for the par-buyback severance that pairs with this — a unit sold
+   * after its `retireDay` has passed refunds exactly what was spent building
+   * it, never a premium, so greeding a unit early is never punished.
+   */
+  retireDay?: number;
+  /**
+   * Enemy-side depth gate (issue #138), the mirror of the shop's `unlockDay`:
+   * `generateGauntlet`'s pool filter skips this enemy for any wave with
+   * 1-based number below `minWave` — a deterministic hard floor, same
+   * precedent as the secondary-archetype pivot gate already in that filter.
+   * Pairs with a high `cost` for a soft "still rare when first available"
+   * curve on top of the hard floor. Meaningless on player units (the shop
+   * never reads it).
+   */
+  minWave?: number;
+  /**
+   * Enemy-side placement flag (issue #138): after a wave's units are rolled,
+   * `generateGauntlet` moves every `rearguard` enemy to the BACK of the wave
+   * (stable order otherwise). Without this, `spendPhase` spends the primary
+   * archetype first, so a support enemy sharing the primary theme rolls
+   * straight into the front clash slot and dies doing nothing — the reorder
+   * is what creates the "kill the protected support first" tension the
+   * enchanter wing exists for. Meaningless on player units (players place
+   * their own board).
+   */
+  rearguard?: boolean;
+}
+
+export interface LineupUnit {
+  defId: string;
+  tier?: number;
+  relicIds?: string[];
+}
+
+export interface Lineup {
+  units: LineupUnit[];
+  teamRelicIds?: string[];
+  /**
+   * How many bodies this side may hold *during combat*, summons included.
+   * Callers building from a `BuildState` (see `lineupFromBuild`/
+   * `combatCapForBuild` in shop.ts) set this to `units.length + 2` — always
+   * larger than however many rats were actually deployed, so a summoner is
+   * never starved by a full warren, but never banks more than 2 spare slots
+   * either (issue #69). Omitted = `BOARD_CAP`, which keeps every pre-existing
+   * golden log byte-identical.
+   */
+  combatCap?: number;
+  /**
+   * Real-world half-day this ride's rats fight in (issue #12) — drives
+   * Dawn-Runt/Dusk-Runt's `condition.timeOfDay` gate. Omitted = neither
+   * condition matches, so any lineup that predates or doesn't care about
+   * time-of-day (every golden log, every existing test) behaves exactly as
+   * it did before this field existed. The app layer resolves this from the
+   * wall clock (see `copenhagenSeconds`/`timeOfDayAt` in App.svelte);
+   * `simulate` never reads the clock itself.
+   */
+  timeOfDay?: TimeOfDay;
+}
+
+/**
+ * Full spec §5.4 roster. Archetypes: Breed/Swarm, Plague, Sacrifice, Bruiser/Anchor.
+ *
+ * `tribe` tagging rationale (issue #88, Pack-Caller) — a subjective read of
+ * each unit's flavor/mechanics, called out here since it's a judgment call:
+ *   - "runt": small, cheap, or literally-named-Runt bodies — Pup, Gutter
+ *     Runt, Dawn-Runt, Dusk-Runt. Gnawer joins this tribe too: fragile
+ *     (1 health) glass-cannon chaff, thematically a scrappy little biter
+ *     rather than a brute or plague unit. Pack-Caller itself is tagged
+ *     "runt" — it's a rallying caller for the horde's little guys, and this
+ *     tribe already has the deepest bench (5 other units), which makes an
+ *     all-runt board a genuinely buildable theme rather than a trap with no
+ *     support.
+ *   - "swarm": breeding/summon-focused units — Rat-Piper (pipes in pups
+ *     every wave) and Brood-Mother (births pups on faint).
+ *   - "plague": poison-dealing units — Plague-Bearer and Blight-Witch.
+ *   - "brute": big, tanky anchors — Warren-Warden, Dire-Rat (armored),
+ *     MD Rattyfock (Warren-Warden's kit, reskinned).
+ *   - Left untagged: Corpse-Glutton, Bone-Priest, Press-Kin, Ward-Weaver.
+ *     None of these read as belonging to an obvious kinship group — forcing
+ *     a tag on a unit with no real thematic tribe would just be noise (the
+ *     issue explicitly says use judgment, not "tag everything").
+ *
+ * NON-MECHANICAL as of the 2026-07-16 Pack-Caller rework: `tribe` was
+ * counting fodder for `buffAdjacentByTribe`, and Pack-Caller was its only
+ * reader — that ability is gone (see `distributeStatsOnFaint`'s doc comment
+ * above), so no unit currently reads this field at all. Left in place as
+ * flavor/taxonomy (the categorization above still describes the roster
+ * honestly) rather than stripped from every tagged unit, since a future
+ * tribe-synergy mechanic may want it — but don't assume it does anything
+ * today.
+ */
+export const UNIT_DEFS: Record<string, UnitDef> = {
+  pup: { id: 'pup', name: 'Pup', attack: 1, health: 1, cost: 0, tribe: 'runt' },
+  'gutter-runt': {
+    id: 'gutter-runt', name: 'Gutter Runt', attack: 1, health: 1, cost: 2,
+    tribe: 'runt',
+    // Season unit-churn (issue #109) originally cut this to a day-1/2-only
+    // body (retireDay: 3) — cheap filler was polluting late-week rolls
+    // (evidence: appeared once across two full seasons of leaderboard
+    // lineups). Season 3: retired outright instead (retireDay: 1, so the
+    // shop pool excludes it from day 1 on) — a mid-week fade was still
+    // reading as a schedule tax rather than a decision, and there was no
+    // sign any all-runt Pack-Caller board (#88) actually wanted it late-week
+    // over the other cheap runt bodies. Par-buyback severance (`sellRefund`
+    // in shop.ts) still applies, so any copy carried in from a prior season
+    // sells for exactly what was spent, never a loss.
+    retireDay: 1,
+  },
+  // Rat-Piper (issue #105 rework): maintenance summoner. Keeps a litter of
+  // `count * tier` = 1/2/3 pups topped up — summons only the shortfall each
+  // wave, nothing when the litter is full. Its permanent contribution is
+  // bounded at the source (see `maintainSummons`), which is what lets the
+  // global combat cap rise for Brood-Mother's cascade.
+  'rat-piper': {
+    id: 'rat-piper', name: 'Rat-Piper', attack: 1, health: 2, cost: 4,
+    // Target 2/4/6 pups (count*tier). count is 2, not 1, per the #105 balance
+    // read: the OLD `summon 1/wave` accidentally accumulated ~2 pups against
+    // the tiny +2 cap before no-op'ing, so a target of 1 was a stealth nerf
+    // (T1 value rank fell 15->18). Two restores its effective power while
+    // keeping the litter bounded at the source. Still nowhere near flagged in
+    // exploit-stress (weak 1/1 bodies, hard-capped by combatCap).
+    ability: { trigger: 'startOfWave', effect: { kind: 'maintainSummons', unitId: 'pup', count: 2 } },
+    tribe: 'swarm',
+  },
+  // Brood-Mother (issue #105 rework): the babushka. On faint she spawns two
+  // Brood-Broodlings; each broodling, on ITS faint, spawns two Brood-Runts;
+  // runts are terminal. A matryoshka cascade that is finite BY CONSTRUCTION
+  // — the terminal def carries no faint-summon, so there is no depth counter
+  // to get wrong and nothing to cap (each generation is a distinct, smaller
+  // def, not a decrementing self-summon). `faint` fires once per instance, so
+  // this was never the compounding risk the old tiny combat cap policed; it
+  // was only ever starved by it. Count scales with the MOTHER's tier; the
+  // child generations stay tier-1 (fixed small bodies), so the cascade grows
+  // in width with her star level, not in unbounded depth.
+  'brood-mother': {
+    id: 'brood-mother', name: 'Brood-Mother', attack: 2, health: 3, cost: 5,
+    ability: { trigger: 'faint', effect: { kind: 'summon', unitId: 'brood-broodling', count: 2 } },
+    tribe: 'swarm',
+  },
+  'brood-broodling': {
+    id: 'brood-broodling', name: 'Brood-Broodling', attack: 1, health: 2, cost: 0,
+    ability: { trigger: 'faint', effect: { kind: 'summon', unitId: 'brood-runt', count: 2 } },
+    tribe: 'runt',
+  },
+  'brood-runt': {
+    id: 'brood-runt', name: 'Brood-Runt', attack: 1, health: 1, cost: 0,
+    tribe: 'runt',
+  },
+  'plague-bearer': {
+    id: 'plague-bearer', name: 'Plague-Bearer', attack: 2, health: 2, cost: 4,
+    ability: { trigger: 'startOfWave', effect: { kind: 'poisonLastEnemy' } },
+    tribe: 'plague',
+  },
+  'blight-witch': {
+    id: 'blight-witch', name: 'Blight-Witch', attack: 3, health: 3, cost: 8,
+    ability: { trigger: 'startOfWave', effect: { kind: 'poisonAllEnemies' } },
+    tribe: 'plague',
+  },
+  // Season-3 prestige tribute (issue #115): Draughtsman Moe reskins
+  // Blight-Witch's exact kit/stats to honor RatMoe, the season-2 champion who
+  // maxed depth 45 on a 3× Blight-Witch poison-swarm. Same reskin precedent as
+  // MD Rattyfock (Warren-Warden) — the base `blight-witch` def stays in
+  // UNIT_DEFS for golden logs/replays, but is removed from the purchasable pool
+  // (see SHOP_UNIT_POOL in shop.ts) so the poison-all kit is only offered under
+  // the prestige name. Stays `plague`-tribe so it supports the archetype he
+  // pioneered and pairs with the reworked Plague-Bearer (#112, poisons the
+  // back): Moe rots wide, Bearer rots deep. Balance of the shared poison-all
+  // kit is tracked in #116 — tune the kit there, since Moe IS that kit.
+  'draughtsman-moe': {
+    id: 'draughtsman-moe', name: 'Draughtsman Moe', attack: 3, health: 3, cost: 8,
+    ability: { trigger: 'startOfWave', effect: { kind: 'poisonAllEnemies' } },
+    tribe: 'plague',
+  },
+  gnawer: {
+    id: 'gnawer', name: 'Gnawer', attack: 3, health: 1, cost: 4,
+    // Issue #111 rework: was a flat `buffBehind` +2 that never aged. Now a
+    // `bequeathAttack` (own live attack + capped wave-died-on bonus) — see
+    // that effect kind's doc comment above for the full formula and the
+    // compounding-law/Cellar-Coil reasoning behind the cap living here.
+    ability: { trigger: 'faint', effect: { kind: 'bequeathAttack', waveBonusCapMultiplier: 2 } },
+    tribe: 'runt',
+  },
+  'corpse-glutton': {
+    id: 'corpse-glutton', name: 'Corpse-Glutton', attack: 3, health: 2, cost: 7,
+    ability: { trigger: 'allyFaint', effect: { kind: 'gainStats', attack: 1, health: 1 } },
+  },
+  'bone-priest': {
+    id: 'bone-priest', name: 'Bone-Priest', attack: 1, health: 4, cost: 5,
+    ability: { trigger: 'faint', effect: { kind: 'revive' } },
+  },
+  'warren-warden': {
+    id: 'warren-warden', name: 'Warren-Warden', attack: 2, health: 6, cost: 6,
+    ability: { trigger: 'startOfBattle', effect: { kind: 'buffBehind', attack: 1, health: 1, all: true } },
+    tribe: 'brute',
+  },
+  'dire-rat': {
+    id: 'dire-rat', name: 'Dire-Rat', attack: 4, health: 5, cost: 7,
+    damageReduction: 2,
+    // Day-1 shop is deliberately kept plain (Jesper, 2026-07-11): the three
+    // strongest early picks — the armored tank, the Season-1 anchor, and the
+    // front-shield — hold back to day 2, so day 1 is a humble scramble and the
+    // shop gets visibly stronger as the expedition opens up (days 2-4 are the
+    // exciting stretch). Only gates the SHOP roll; a unit already owned/on the
+    // board is unaffected, and the balance scripts build lineups directly so
+    // they don't see this gate.
+    unlockDay: 2,
+    tribe: 'brute',
+  },
+  'md-rattyfock': {
+    id: 'md-rattyfock', name: 'MD Rattyfock', attack: 2, health: 6, cost: 6,
+    ability: { trigger: 'startOfBattle', effect: { kind: 'buffBehind', attack: 1, health: 1, all: true } },
+    unlockDay: 2, // day-1 shop kept plain — see Dire-Rat's note.
+    tribe: 'brute',
+  },
+  'press-kin': {
+    id: 'press-kin', name: 'Press-Kin', attack: 2, health: 4, cost: 5,
+    ability: { trigger: 'startOfBattle', effect: { kind: 'buffAdjacent', attack: 2, health: 2 } },
+  },
+  // COST 6 -> 5 -> 6 (2026-07-18, Jesper's call): PR #125's cost rebalance
+  // dropped this to 5. The Twilight-Runt wave-rework balance pass (PR #123)
+  // ran a real-board seat-swap probe (the isolated all-unit-value tier list
+  // doesn't reach deep enough waves to catch this — see that script's doc
+  // comment) and found Ward-Weaver the single best back-seat swap on a
+  // day-7 t2+relics board — +5.9 waves, clear of every alternative
+  // including Twilight-Runt's own +2.5. Bumped back to 6 to bring that
+  // outlier in line; not re-run through the full all-unit-value/
+  // realistic-player suite yet.
+  'ward-weaver': {
+    id: 'ward-weaver', name: 'Ward-Weaver', attack: 1, health: 3, cost: 6,
+    ability: { trigger: 'startOfWave', effect: { kind: 'blockFrontHits' } },
+    unlockDay: 2, // day-1 shop kept plain — see Dire-Rat's note.
+  },
+  // Issue #12: a parallel "Runt" pair (Gutter-Runt precedent) tied to the
+  // game's dawn/dusk duality rather than literal noon-splitting — the actual
+  // trigger condition is the broader before/after-noon Copenhagen split, but
+  // the flavor leans poetic. Day-gated (unlockDay) rather than depth-gated,
+  // per #6's fairness resolution, so the shop stays a pure function of
+  // (date, day) with no new per-account state.
+  'dawn-runt': {
+    id: 'dawn-runt', name: 'Dawn-Runt', attack: 1, health: 2, cost: 4,
+    ability: {
+      trigger: 'startOfBattle',
+      effect: { kind: 'teamBuff', attack: 2, health: 0 },
+      condition: { timeOfDay: 'beforeNoon' },
+    },
+    unlockDay: 3,
+    tribe: 'runt',
+  },
+  'dusk-runt': {
+    id: 'dusk-runt', name: 'Dusk-Runt', attack: 1, health: 2, cost: 4,
+    ability: {
+      trigger: 'startOfBattle',
+      effect: { kind: 'teamBuff', attack: 0, health: 2 },
+      condition: { timeOfDay: 'afterNoon' },
+    },
+    unlockDay: 3,
+    tribe: 'runt',
+  },
+  // Issue #88, reworked 2026-07-16 (see `distributeStatsOnFaint`'s doc
+  // comment above for the full rationale — was a lazy Press-Kin clone with
+  // an invisible-mechanic magnitude). Stats (attack 2 / health 3 / cost 5)
+  // are unchanged from the original, still the design doc's rough starting
+  // point, NOT final — flagged for Jesper's balance sign-off, same as every
+  // other tentative stat line in this file. Still tagged "runt" as pure
+  // flavor (see the tagging-rationale comment above `UNIT_DEFS`) — no unit
+  // currently reads `tribe` mechanically now that this was its only reader.
+  'pack-caller': {
+    id: 'pack-caller', name: 'Pack-Caller', attack: 2, health: 3, cost: 5,
+    // faint: fires on every death, so a Bone-Priest-revived Pack-Caller that
+    // dies a second time pays out twice (revive is capped once per corpse,
+    // same as Gnawer's `bequeathAttack`). `totalBudgetMultiplier` (issue
+    // #131 v2, tentative pending balance sign-off, see `distributeStatsOnFaint`'s
+    // doc comment above for the full history — a receiver-side cap shipped
+    // first and was replaced same day for flattening the card's late-death
+    // playstyle): every Pack-Caller on a side shares one lifetime budget for
+    // this effect, sized to one tier-3 Pack-Caller's own base attack/health
+    // — spread it thin early or bank it for one big late payout, your call,
+    // but the total across the whole battle is capped either way.
+    ability: { trigger: 'faint', effect: { kind: 'distributeStatsOnFaint', totalBudgetMultiplier: 3 } },
+    tribe: 'runt',
+  },
+  // Issue #86: Slink-Rat — first consumer of the `backlineDamage` primitive
+  // (#85). Attack 3 / health 1 / cost 6 are the design doc's rough starting
+  // point, NOT final — flagged for Jesper's balance sign-off. 1 HP is
+  // deliberate: worthless (dies to almost anything) if it ever reaches the
+  // front, rewarding a durable front wall built to protect it.
+  'slink-rat': {
+    id: 'slink-rat', name: 'Slink-Rat', attack: 3, health: 1, cost: 6,
+    // startOfWave, via `backlineDamage` (see that Effect's doc comment for
+    // the full compounding-law note and the four resolved interaction
+    // decisions against Marrow-Snap/Ward-Weaver/Gore-Cleaver). Merge scaling
+    // (issue #86 follow-up) grows the number of enemies hit — 1/2/3 by tier,
+    // see `backlineTargetsForTier` — not the per-hit damage, which stays this
+    // unit's flat base attack (3) regardless of tier. No accumulation across
+    // waves; multiple Slink-Rats stack additively, bounded by board/wave size.
+    ability: { trigger: 'startOfWave', effect: { kind: 'backlineDamage' } },
+  },
+  // Issue #110: single-unit fusion of the Dawn-Runt/Dusk-Runt pair above —
+  // ADDED alongside them, not a replacement. Retiring Dawn/Dusk-Runt from
+  // the shop pool is issue #109's job, not this one; doing it here would
+  // conflict with that issue's own SHOP_UNIT_POOL edit. Every ride now has
+  // a unit that's never a dead card regardless of how deep the ride goes —
+  // see `teamBuffByWave`'s doc comment above for the wave-based mechanism
+  // (2026-07-16 rework, replacing the original wall-clock split) and the
+  // placeholder-magnitude flag.
+  //
+  // COST 4 -> 5 -> 6 (2026-07-18, Jesper's call, pre-launch sign-off): the
+  // #127 fix to all-unit-value.ts's timeOfDay blend (it previously measured
+  // this unit as a near-total no-op) revealed it was the single best T1/T2/T3
+  // solo unit in the game by a wide margin at cost 5 — 27.2/15.3/9.7
+  // waves-per-100-scrap vs. the next-best unit's 20.1/10.5/7.6. 6 keeps it
+  // #1 at every tier but with a normal-sized lead (22.7/12.8/8.1), rather
+  // than a structural outlier, while respecting `unlockDay: 3` as the
+  // primary limiter on how much of it a horde can field this week. Cost 6
+  // re-measured for the wave-based rework (2026-07-18 balance pass, PR
+  // #123): 20.4/12.4/6.9 waves-per-100-scrap, ranks #1/#1/#3 — tamer than
+  // the time-blend profile above; cost 6 stands. See `teamBuffByWave`'s
+  // doc comment for the full pass.
+  'twilight-runt': {
+    id: 'twilight-runt', name: 'Twilight-Runt', attack: 1, health: 2, cost: 6,
+    ability: {
+      trigger: 'startOfWave',
+      effect: {
+        kind: 'teamBuffByWave',
+        early: { attack: 2, health: 1 },
+        late: { attack: 1, health: 1 },
+        switchWave: 15,
+      },
+    },
+    unlockDay: 3,
+  },
+  // Issue #106: Cellar-Coil — "positional patience" (docs/design/future-minions.md
+  // concept 2). Attack 2 / health 4 / cost 5 are the design doc's rough
+  // starting point, NOT final — flagged for Jesper's balance sign-off.
+  // Squishy on purpose: 4 HP is little enough that benching it for the 6+
+  // Waves it takes to fill the cap is a real risk, not a free stat stick.
+  'cellar-coil': {
+    id: 'cellar-coil', name: 'Cellar-Coil', attack: 2, health: 4, cost: 5,
+    // startOfWave + `condition.notFront` (see both doc comments above): fires
+    // every Wave the unit survives while NOT at board index 0, and is a
+    // no-op the Wave it's front (or the Wave it doesn't survive). The
+    // `chargeWhileBenched` effect is HARD-CAPPED via
+    // `cellarCoilChargeCapForTier` — see that function's and the effect's
+    // doc comments in this file, and the `chargeWhileBenched` case in
+    // sim.ts's `applyEffect`, for the full ADR-0003 compounding-law sign-off.
+    // `attackPerWave: 1` here is the PRE-tier-scale literal — the case in
+    // sim.ts multiplies by `tier` (linear, 1/2/3), matching
+    // `cellarCoilChargeCapForTier`'s own linear-not-exponential rationale.
+    ability: {
+      trigger: 'startOfWave',
+      effect: { kind: 'chargeWhileBenched', attackPerWave: 1 },
+      condition: { notFront: true },
+    },
+  },
+  // ---- Season 4 (issues #133-#135, #137) — every stat line below is a
+  // placeholder pending Jesper's balance sign-off, same as every other new
+  // magnitude ever added to this file. Targeted probes flagged per issue:
+  // a swarm board (Rat-Piper + Brood-Mother + Sensei) for #133, swarm-vs-
+  // brute matchup texture for #134, a wave-40+ ride with/without Fat Tick
+  // for #135 (the Fat Tick retire/re-scope decision is tuned JOINTLY with
+  // the Leech's drain — see relics.ts), brute-heavy waves for #137.
+
+  // Issue #133: Squeak-Sensei — swarm payoff (dojo trainer: every pup that
+  // arrives beside it comes trained). First consumer of the `allySummoned`
+  // trigger; the buff lands on the NEWCOMER only — see `buffSummoned`'s doc
+  // comment above for why that targeting choice IS the compounding-law
+  // safety, and don't move it onto a persistent unit without a hard cap.
+  'squeak-sensei': {
+    id: 'squeak-sensei', name: 'Squeak-Sensei', attack: 2, health: 3, cost: 5,
+    ability: { trigger: 'allySummoned', effect: { kind: 'buffSummoned', attack: 1, health: 1 } },
+    tribe: 'swarm',
+  },
+  // Issue #134: Steel-Whisker — thorns. An armored body whose bristles cut
+  // back: small `damageReduction` so it's a genuine front-line pick, plus a
+  // stateless per-hit reflect (see `reflectDamage`'s doc comment above —
+  // reflect, never gain-on-hurt). Intended matchup texture: shines against
+  // many-small-hits swarms, weak into brutes.
+  'steel-whisker': {
+    id: 'steel-whisker', name: 'Steel-Whisker', attack: 2, health: 6, cost: 6,
+    damageReduction: 1,
+    ability: { trigger: 'onHurt', effect: { kind: 'reflectDamage', damage: 2 } },
+    tribe: 'brute',
+  },
+  // Issue #135: Grave-Leech — sustain; a front tank that drains, NOT the
+  // back-line healer future-minions.md killed (a back unit never gets hit,
+  // so healing it is a no-op — this one heals ITSELF by fighting). Clamped
+  // at maxHealth in the effect application; see `healSelf`'s doc comment.
+  // Drain halved 2→1 per the #147 sign-off: at amount 2 it was the only
+  // unit exploit-stress flagged (7×T3 cleared 36/45, the Bone-Priest/
+  // Warren-Warden incident shape) and the only one whose cost-efficiency
+  // ROSE with tier. afterAttack repeats every clash (compounding law), so
+  // the sustain number, not the body, is the lever that compounds.
+  'grave-leech': {
+    id: 'grave-leech', name: 'Grave-Leech', attack: 3, health: 6, cost: 6,
+    ability: { trigger: 'afterAttack', effect: { kind: 'healSelf', amount: 1 } },
+    tribe: 'brute',
+  },
+  // Issue #137: Gutter-Acolyte — anti-brute tech: the roster's first enemy
+  // attack-shred (armor blunts hits, poison races health; nothing lowered
+  // the incoming number itself before this). Whole-line targeting and the
+  // ≥1 floor are design calls documented on `weakenAllEnemies` above, both
+  // flagged for sign-off. Shipping AFTER the compendium (#136, already on
+  // dev) per the issue's readability dependency. Tagged plague for the
+  // Catacombs curse flavor — a soft read, like every tribe tag.
+  'gutter-acolyte': {
+    id: 'gutter-acolyte', name: 'Gutter-Acolyte', attack: 2, health: 3, cost: 5,
+    ability: { trigger: 'startOfWave', effect: { kind: 'weakenAllEnemies', attack: 1 } },
+    tribe: 'plague',
+  },
+};
+
+/** Hardcoded showcase lineup until the shop lands (milestone 4). Index 0 = front. */
+export const TEST_HORDE: Lineup = {
+  units: [
+    { defId: 'gnawer', relicIds: ['rusted-nail'] },
+    { defId: 'plague-bearer' },
+    { defId: 'corpse-glutton', relicIds: ['fat-tick'] },
+    { defId: 'brood-mother' },
+    { defId: 'bone-priest', relicIds: ['tail-charm'] },
+  ],
+  teamRelicIds: ['filth-totem'],
+};

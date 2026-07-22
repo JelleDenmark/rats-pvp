@@ -1,0 +1,65 @@
+-- Add a cumulative "enemies defeated this season" metric to the leaderboard.
+-- Ordering becomes: depth desc, kills desc (tiebreak), updated_at asc (final tiebreak).
+--
+-- Backward compatibility: the currently-live prod app does NOT send p_kills.
+-- This migration is applied to the live DB BEFORE the new app code ships, so
+-- p_kills defaults to 0 and old callers keep working unchanged (their kills
+-- stay 0 until they upgrade and start sending real totals).
+--
+-- kills is a cumulative, monotonic per-device season total (mirrors how
+-- depth-best already works) — the upsert stores greatest(existing, new) so a
+-- stale/lower resubmit can never lower it, independent of the depth-best logic.
+--
+-- DO NOT RUN THIS AUTOMATICALLY. Apply by hand against the live Supabase
+-- project (wvrllhiktnkvbpclmrpq) via the SQL editor or CLI.
+
+-- 1. New column, defaulted so existing rows/writers are unaffected.
+alter table public.scores
+  add column if not exists kills bigint not null default 0;
+
+-- 2. Replace the RPC to accept p_kills (defaulted for old callers) and store
+--    greatest(existing, new) for kills. This is the live submit_score body
+--    verbatim (verified via pg_get_functiondef on 2026-07-06 — keeps the name
+--    sanitization `left(coalesce(nullif(...),'Warlord'),24)`, the `greatest(p_depth,0)`
+--    clamp, the `s` alias, and the depth-best day/lineup logic) with only the
+--    kills column/param/upsert added.
+create or replace function public.submit_score(
+  p_season text,
+  p_device uuid,
+  p_name text,
+  p_depth integer,
+  p_day integer,
+  p_lineup jsonb,
+  p_kills bigint default 0
+)
+ returns void
+ language plpgsql
+ security definer
+ set search_path to 'public'
+as $function$
+begin
+  insert into public.scores as s (season_id, device_id, name, depth, day, lineup, kills, updated_at)
+  values (p_season, p_device, left(coalesce(nullif(p_name,''),'Warlord'),24),
+          greatest(p_depth,0), p_day, p_lineup, greatest(p_kills,0), now())
+  on conflict (season_id, device_id) do update set
+    name       = excluded.name,
+    day        = case when excluded.depth > s.depth then excluded.day    else s.day    end,
+    lineup     = case when excluded.depth > s.depth then excluded.lineup else s.lineup end,
+    depth      = greatest(s.depth, excluded.depth),
+    -- kills is a cumulative monotonic total — never let a resubmit lower it
+    kills      = greatest(s.kills, excluded.kills),
+    updated_at = now();
+end;
+$function$;
+
+grant execute on function public.submit_score(text, uuid, text, integer, integer, jsonb, bigint) to anon;
+
+-- 3. CRITICAL: adding p_kills changes the arity, so the CREATE OR REPLACE above
+--    did NOT replace the original 6-arg function — it created a SECOND overload.
+--    A 6-arg call (the pre-0.6.0 client, which omits p_kills) then matches BOTH
+--    functions and PostgREST returns 300 PGRST203 ("could not choose the best
+--    candidate"), so every legacy submit fails silently. Drop the old 6-arg
+--    function so 6-arg calls resolve unambiguously to the new one via the
+--    p_kills default. (This was missed on first apply and broke prod submits
+--    2026-07-06→07 until dropped.)
+drop function if exists public.submit_score(text, uuid, text, integer, integer, jsonb);
