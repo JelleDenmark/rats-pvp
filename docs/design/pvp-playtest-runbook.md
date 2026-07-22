@@ -1,59 +1,53 @@
 # PvP first playtest — runbook
 
-The lean manual round. Code is built and verified locally (341 tests green, the
-`?mode=pvp` screen renders + the allocator/budget work). The steps below are the
-**Jesper-only** operational bits (Supabase + deploy + running each round).
+The lean manual round. **Live and deployed**: https://github.com/JelleDenmark/rats-pvp
+→ https://jelledenmark.github.io/rats-pvp/?mode=pvp (public repo, `master` branch,
+single-branch GitHub Pages deploy — no `dev` channel in this fork, so round ids
+are **unprefixed**). 341 tests green; the migration is applied to the live
+Supabase project and the full submit → run-round → standings loop has been
+verified end-to-end against the deployed page.
 
-## One-time setup
+## One-time setup (done)
 
-1. **Apply the migration.** Run `supabase/migrations/2026-07-22-add-pvp.sql`
-   against the live project (`wvrllhiktnkvbpclmrpq`) via the Supabase SQL editor
-   (or CLI). It creates `pvp_boards`, `pvp_results`, and the `submit_pvp_board`
-   RPC with RLS (anon read; writes via the RPC / service key only). It is
-   idempotent (`if not exists` / `create or replace`).
+1. ~~Apply the migration~~ — `supabase/migrations/2026-07-22-add-pvp.sql` is
+   applied to the live project (`wvrllhiktnkvbpclmrpq`): `pvp_boards`,
+   `pvp_results`, `submit_pvp_board` RPC, RLS all live. Re-running it is safe
+   (idempotent `if not exists` / `create or replace`) if you ever need to.
 
-2. **Local `.env` for the round runner.** Create `./.env` (repo root) with the
-   **service-role** key (Supabase dashboard → Project Settings → API →
-   `service_role`, *not* the anon key):
+2. ~~Local `.env`~~ — `./.env` (repo root, gitignored) already has
+   `SUPABASE_SERVICE_ROLE_KEY` set, so `run-round` writes real results (not
+   dry-run).
 
-   ```
-   SUPABASE_SERVICE_ROLE_KEY=eyJ...
-   ```
-
-   `.env` is gitignored — never commit it. Without it, `run-round` still works
-   in **dry-run** (prints standings, writes nothing).
+3. ~~Deploy~~ — pushed to `master`, GitHub Pages is live (single-branch workflow,
+   `.github/workflows/deploy.yml`). Future pushes to `master` redeploy
+   automatically.
 
 ## Each round
 
-1. **Open the round.** Deploy the dev channel: push to the `dev` branch →
-   GitHub Pages builds `/dev/`. Players open:
+1. **Open the round.** Share the URL — round id is unprefixed:
 
    ```
-   https://<your-pages-domain>/dev/?mode=pvp          (round r1, the default)
-   https://<your-pages-domain>/dev/?mode=pvp&round=r2  (later rounds)
+   https://jelledenmark.github.io/rats-pvp/?mode=pvp          (round r1, the default)
+   https://jelledenmark.github.io/rats-pvp/?mode=pvp&round=r2  (later rounds)
    ```
 
-   The dev channel prefixes the round id with `dev-`, so `?round=r1` submits to
-   round **`dev-r1`**. Players spend 100 scrap, build a board, hit **Submit**.
+   Players spend 100 scrap, build a board, hit **Submit**.
 
 2. **Close the round.** Once submissions are in, run the all-vs-all and write
-   standings (note the `dev-` prefix — it must match what the client submitted):
+   standings:
 
    ```bash
-   npm run run-round -- dev-r1
+   npm run run-round -- r1
    ```
-
-   Run it once without the key first if you want a dry-run preview. With the key
-   present it writes `pvp_results`.
 
 3. **Players see results.** They revisit the same URL → **Standings** tab shows
    the ranked board and their own matchups, each replayable in the Pixi stage
    (the client re-simulates each duel locally — deterministic, so it matches).
 
 4. **Next round.** Share `?round=r2`, players rebuild, then
-   `npm run run-round -- dev-r2`. Watching the **meta rotate** across rounds
-   (does the counter to last round's popular archetype win?) is the main thing
-   this test is for.
+   `npm run run-round -- r2`. Watching the **meta rotate** across rounds (does
+   the counter to last round's popular archetype win?) is the main thing this
+   test is for.
 
 ## What to watch for in the test
 - Is building a board + anticipating the field **fun**?
