@@ -9,6 +9,8 @@
     "dev": "npm run dev -w @wrad/app",
     "build": "npm run build -w @wrad/app",
     "balance": "npm run balance -w @wrad/core",
-    "snowball": "npm run snowball -w @wrad/core"
+    "snowball": "npm run snowball -w @wrad/core",
+    "leaderboard-duels": "npm run leaderboard-duels -w @wrad/core",
+    "win-matrix": "npm run win-matrix -w @wrad/core"
   }
 }

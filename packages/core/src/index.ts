@@ -75,8 +75,12 @@ export {
   type ShopSlot,
   type ActionResult,
 } from './shop';
+export { simulateDuel, type DuelResult } from './duel';
 export {
   simulate,
+  simulateCore,
+  type BattleMode,
+  type CoreOutput,
   BOARD_CAP,
   COMBAT_CAP_BONUS,
   MIN_ATTACK_DAMAGE,

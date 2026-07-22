@@ -176,28 +176,75 @@ export function simulate(
   lineup: Lineup,
   gauntlet: Gauntlet
 ): { events: BattleEvent[]; result: BattleResult } {
+  const { events, result } = simulateCore(lineup, { kind: 'gauntlet', gauntlet });
+  return { events, result };
+}
+
+/**
+ * How the enemy side is sourced for a battle:
+ * - `gauntlet`: the PvE wave sequence (tier-1, relic-less, wave-scaled foes).
+ * - `duel`: a second player Lineup fought as one symmetric wave (full tiers,
+ *   relics and team relics; no wave scaling). See `simulateDuel` in duel.ts.
+ */
+export type BattleMode =
+  | { kind: 'gauntlet'; gauntlet: Gauntlet }
+  | { kind: 'duel'; opponent: Lineup };
+
+export interface CoreOutput {
+  events: BattleEvent[];
+  result: BattleResult;
+  /** Enemy-side ('gauntlet') survivors when the battle ended. In a duel this is
+   * side B's surviving board — `simulateDuel` needs it to pick the winner. The
+   * PvE `simulate` wrapper drops it. */
+  enemySurvivors: UnitView[];
+}
+
+/**
+ * Shared battle core for both PvE (`simulate`) and PvP (`simulateDuel`).
+ * Pure and deterministic: same inputs always yield a byte-identical event log.
+ * No unseeded randomness, no wall-clock, no iteration over unordered
+ * collections. In `gauntlet` mode it reproduces the original `simulate`
+ * behaviour exactly — the enemy side carries no team relics, so the per-side
+ * team-bonus generalization below is a strict no-op for it.
+ *
+ * Tick order: heals -> simultaneous clash -> afterAttack triggers ->
+ * poison ticks -> death resolution (faint ability, faint relics,
+ * allyFaint listeners — horde before gauntlet, front to back).
+ */
+export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
   const events: BattleEvent[] = [];
   let nextInstanceId = 1;
 
-  const teamRelics = (lineup.teamRelicIds ?? [])
-    .map((id) => RELIC_DEFS[id])
-    .filter((r): r is RelicDef => r !== undefined && r.scope === 'team');
-  const teamAttack = teamRelics.reduce((s, r) => s + (r.attack ?? 0), 0);
-  const teamHealth = teamRelics.reduce((s, r) => s + (r.health ?? 0), 0);
-  // Whole-horde per-tick regen (The Forgotten Backpack). Same shape as a
-  // unit's healPerTick (Fat Tick), just summed across team relics and applied
-  // to every horde unit instead of only the carrier. Compounding-law check:
-  // this is bounded exactly like Fat Tick's regen below — every tick it's
-  // clamped to `maxHealth - health`, so it can never push a unit past its own
-  // health ceiling no matter how many of the 45 waves it runs across.
-  const teamHealPerTick = teamRelics.reduce((s, r) => s + (r.healPerTick ?? 0), 0);
-  // Both sides share one in-combat ceiling. Absent (golden logs, tests,
-  // gauntlet-only callers) it's BOARD_CAP, exactly as before.
-  const combatCap = lineup.combatCap ?? BOARD_CAP;
-  // Real-world half-day this ride belongs to (issue #12: Dawn-Runt/Dusk-Runt).
-  // Never read from the clock here — the app layer resolves it and passes it
-  // in via Lineup.timeOfDay. Omitted = matches neither ability condition, so
-  // any lineup that doesn't know about time-of-day is unaffected.
+  // Team-relic stat pools resolved PER SIDE (was horde-only). In `gauntlet`
+  // mode the enemy side has no team relics, so its pools are all-zero and
+  // combat stays byte-identical; in `duel` mode each board brings its own.
+  const teamBonus = (ids?: string[]) => {
+    const rs = (ids ?? [])
+      .map((id) => RELIC_DEFS[id])
+      .filter((r): r is RelicDef => r !== undefined && r.scope === 'team');
+    return {
+      attack: rs.reduce((s, r) => s + (r.attack ?? 0), 0),
+      health: rs.reduce((s, r) => s + (r.health ?? 0), 0),
+      // Whole-board per-tick regen (The Forgotten Backpack): summed across a
+      // side's team relics and split across that side's units in the tick loop,
+      // clamped to maxHealth each tick so it can never overheal.
+      healPerTick: rs.reduce((s, r) => s + (r.healPerTick ?? 0), 0),
+    };
+  };
+  const teamBonusBySide: Record<Side, { attack: number; health: number; healPerTick: number }> = {
+    horde: teamBonus(lineup.teamRelicIds),
+    gauntlet: teamBonus(mode.kind === 'duel' ? mode.opponent.teamRelicIds : undefined),
+  };
+  // Both sides share one in-combat ceiling (summon headroom). Absent it's
+  // BOARD_CAP. In a duel take the larger of the two boards' caps so neither
+  // side's summoners are choked.
+  const combatCap =
+    mode.kind === 'duel'
+      ? Math.max(lineup.combatCap ?? BOARD_CAP, mode.opponent.combatCap ?? BOARD_CAP)
+      : lineup.combatCap ?? BOARD_CAP;
+  // Real-world half-day this battle belongs to (issue #12: Dawn-Runt/Dusk-Runt).
+  // A duel is fought at a single wall-clock moment, so both boards read the
+  // same timeOfDay — taken from side A's lineup.
   const timeOfDay = lineup.timeOfDay;
 
   const instantiate = (
@@ -217,10 +264,8 @@ export function simulate(
     let health =
       Math.round(def.health * tierHealthMultiplier(tier) * healthScale) +
       relics.reduce((s, r) => s + (r.health ?? 0), 0);
-    if (side === 'horde') {
-      attack += teamAttack;
-      health += teamHealth;
-    }
+    attack += teamBonusBySide[side].attack;
+    health += teamBonusBySide[side].health;
     return {
       instanceId: nextInstanceId++,
       defId: def.id,
@@ -809,7 +854,7 @@ export function simulate(
         const perHitAttack =
           (def?.attack ?? 0) +
           source.relics.reduce((s, r) => s + (r.attack ?? 0), 0) +
-          (source.side === 'horde' ? teamAttack : 0);
+          teamBonusBySide[source.side].attack;
         if (perHitAttack <= 0) break;
         const targets = opposing(source.side).slice(0, backlineTargetsForTier(source.tier));
         for (const target of targets) {
@@ -1007,15 +1052,23 @@ export function simulate(
     gauntlet: { attack: 0, health: 0 },
   };
 
-  for (let w = 0; w < gauntlet.waves.length && horde.length > 0; w++) {
+  const waveCount = mode.kind === 'gauntlet' ? mode.gauntlet.waves.length : 1;
+  for (let w = 0; w < waveCount && horde.length > 0; w++) {
     // 1-based wave number, matching the `waveStart`/`waveClear` events below
     // (`wave: w + 1`) — see `currentWave`'s declaration above `applyEffect`
     // for why this is a mutable closure variable rather than threaded as a
     // parameter through every call site.
     currentWave = w + 1;
-    enemies = gauntlet.waves[w].units.map((d) =>
-      instantiate(d, 'gauntlet', [], 1, enemyAttackScale(w), enemyHealthScale(w))
-    );
+    enemies =
+      mode.kind === 'duel'
+        ? mode.opponent.units
+            .slice(0, BOARD_CAP)
+            .map((u) =>
+              instantiate(UNIT_DEFS[u.defId], 'gauntlet', u.relicIds ?? [], u.tier ?? 1)
+            )
+        : mode.gauntlet.waves[w].units.map((d) =>
+            instantiate(d, 'gauntlet', [], 1, enemyAttackScale(w), enemyHealthScale(w))
+          );
     events.push({ type: 'waveStart', wave: w + 1, enemies: enemies.map(view) });
     damageThisWave = 0;
     // First-hit relics (Glass Shard) fire anew each wave — clear the horde's
@@ -1044,12 +1097,13 @@ export function simulate(
       // with board size (issue #75: Forgotten Backpack). Instead of each unit
       // getting full teamHealPerTick, divide it evenly: total team heal per tick
       // = teamHealPerTick (e.g., 1), split among all horde units.
-      const teamHealPerUnit = horde.length > 0 ? teamHealPerTick / horde.length : 0;
       for (const board of [horde, enemies]) {
+        const boardSide: Side = board === horde ? 'horde' : 'gauntlet';
+        const teamHealPerUnit =
+          board.length > 0 ? teamBonusBySide[boardSide].healPerTick / board.length : 0;
         for (const unit of board) {
           const unitHeal = unit.relics.reduce((s, r) => s + (r.healPerTick ?? 0), 0);
-          const totalRegen =
-            unitHeal + (unit.side === 'horde' ? teamHealPerUnit : 0);
+          const totalRegen = unitHeal + teamHealPerUnit;
           const amount = Math.min(totalRegen, unit.maxHealth - unit.health);
           if (amount > 0) {
             unit.health += amount;
@@ -1215,5 +1269,6 @@ export function simulate(
       damageDealt: totalDamage,
       enemiesDefeated: fallen.gauntlet.length,
     },
+    enemySurvivors: enemies.map(view),
   };
 }
