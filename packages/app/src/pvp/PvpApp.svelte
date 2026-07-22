@@ -180,63 +180,70 @@
   }
 </script>
 
-<main class="pvp">
-  <header>
-    <h1>🐀 Rats PvP <span class="round">round {rawRound}</span></h1>
-    <nav>
-      <button class:active={view === 'build'} onclick={() => (view = 'build')}>Build</button>
-      <button class:active={view === 'results'} onclick={goResults}>Standings</button>
-    </nav>
-  </header>
+<main>
+  <h1>RATS PVP</h1>
+  <p class="sub">round {rawRound} · counters WALL ▸ THORN ▸ BRUISER ▸ WALL</p>
+
+  <div class="compendium-nav">
+    <button class:active={view === 'build'} onclick={() => (view = 'build')}>Build</button>
+    <button class:active={view === 'results'} onclick={goResults}>Standings</button>
+  </div>
 
   {#if view === 'build'}
     <section class="build">
-      <p class="hint">
-        Spend {BUDGET} scrap on a board of rats. It auto-fights every other player's board
-        this round. Counters: <b>WALL</b> ▸ <b>THORN</b> ▸ <b>BRUISER</b> ▸ <b>WALL</b>.
-      </p>
+      <p class="hint">Spend {BUDGET} scrap on a board of rats. It auto-fights every other player's board this round.</p>
 
-      <label class="name">
-        Name <input bind:value={name} maxlength="24" placeholder="Rat-boss" />
-      </label>
-
-      <div class="scrap">Scrap left: <b class:broke={left < 0}>{left}</b> / {BUDGET}</div>
-
-      <div class="roster">
-        {#each ROSTER as r}
-          <div class="card">
-            <div class="card-head">
-              <span class="role">{r.role}</span>
-              <span class="c">{cost(r.defId)}⚙</span>
-            </div>
-            <div class="dname">{UNIT_DEFS[r.defId].name}</div>
-            <div class="stats">
-              {UNIT_DEFS[r.defId].attack}⚔ / {UNIT_DEFS[r.defId].health}❤
-            </div>
-            <div class="blurb">{r.blurb}</div>
-            <button onclick={() => add(r.defId)} disabled={cost(r.defId) > left || board.length >= BOARD_CAP}>
-              + Add
-            </button>
-          </div>
-        {/each}
+      <div class="status-row">
+        <span class="scrap">⚙ {left} / {BUDGET} scrap left</span>
+        <label class="name">
+          <input bind:value={name} maxlength="24" placeholder="Rat-boss" />
+        </label>
       </div>
 
-      <h3>Your board <span class="sub">(front → back, left is first to clash)</span></h3>
-      {#if board.length === 0}
-        <p class="empty">No rats yet — add some above.</p>
-      {:else}
-        <ol class="board">
-          {#each board as d, i}
-            <li>
-              <span class="pos">{i + 1}</span>
-              <span>{UNIT_DEFS[d].name}</span>
-              <button class="x" onclick={() => removeAt(i)} aria-label="remove">×</button>
-            </li>
+      <div class="horde-panel">
+        <div class="panel-label row-label">
+          <span>roster</span>
+          <span>tap to add</span>
+        </div>
+        <div class="board roster-board">
+          {#each ROSTER as r}
+            <button
+              class="tile unit-tile"
+              disabled={cost(r.defId) > left || board.length >= BOARD_CAP}
+              onclick={() => add(r.defId)}
+            >
+              <span class="tile-sub role">{r.role}</span>
+              <span class="tile-name">{UNIT_DEFS[r.defId].name}</span>
+              <span class="tile-stats">{UNIT_DEFS[r.defId].attack}⚔/{UNIT_DEFS[r.defId].health}❤</span>
+              <span class="tile-sub">{r.blurb}</span>
+              <span class="tile-cost">⚙ {cost(r.defId)}</span>
+            </button>
           {/each}
-        </ol>
-      {/if}
+        </div>
+      </div>
 
-      <button class="submit" onclick={submit} disabled={board.length === 0 || left < 0 || submitState === 'saving'}>
+      <div class="horde-panel">
+        <div class="panel-label row-label">
+          <span>your board · {board.length}/{BOARD_CAP}</span>
+          <span>front → back, left clashes first</span>
+        </div>
+        {#if board.length === 0}
+          <p class="lb-empty">No rats yet — add some above.</p>
+        {:else}
+          <div class="board horde-board">
+            {#each board as d, i}
+              <button class="tile unit-tile" onclick={() => removeAt(i)} aria-label="remove {UNIT_DEFS[d].name}">
+                <span class="tile-sub">{i + 1}</span>
+                <span class="tile-name">{UNIT_DEFS[d].name}</span>
+                <span class="tile-stats">{UNIT_DEFS[d].attack}⚔/{UNIT_DEFS[d].health}❤</span>
+                <span class="tile-sub">tap to remove</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <button class="ride submit" onclick={submit} disabled={board.length === 0 || left < 0 || submitState === 'saving'}>
         {submitState === 'saving' ? 'Submitting…' : 'Submit board'}
       </button>
       {#if submitState === 'saved'}<p class="ok">Submitted for round {rawRound}. Check Standings after it runs.</p>{/if}
@@ -244,104 +251,327 @@
     </section>
   {:else}
     <section class="results">
-      {#if loadingResults}
-        <p>Loading…</p>
-      {:else if standings.length === 0}
-        <p class="empty">
-          {submittedCount} {submittedCount === 1 ? 'player has' : 'players have'} submitted a board so far.
-          Results stay hidden until the round is closed.
-        </p>
-      {:else}
-        <ol class="lb">
-          {#each standings as row}
-            <li class:me={row.device_id === me}>
-              <span class="rank">{row.rank}</span>
-              <span class="who">{row.name}</span>
-              <span class="score">{row.score} pts</span>
-              <span class="wld">{row.wins}-{row.losses}-{row.draws} · {row.margin >= 0 ? '+' : ''}{row.margin}</span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
+      <div class="leaderboard">
+        <div class="lb-head">
+          <span class="panel-label">Standings · round {rawRound}</span>
+          <button class="lb-refresh" onclick={() => void loadResults()} disabled={loadingResults}>
+            {loadingResults ? '…' : '↻'}
+          </button>
+        </div>
+        {#if loadingResults}
+          <p class="lb-empty">Loading…</p>
+        {:else if standings.length === 0}
+          <p class="lb-empty">
+            {submittedCount} {submittedCount === 1 ? 'player has' : 'players have'} submitted a board so far.
+            Results stay hidden until the round is closed.
+          </p>
+        {:else}
+          <ol class="lb-rows">
+            {#each standings as row}
+              <li class="lb-row" class:me={row.device_id === me}>
+                <span class="lb-rank">{row.rank}</span>
+                <span class="lb-name">{row.name}{row.device_id === me ? ' · you' : ''}</span>
+                <span class="lb-boss">{row.wins}-{row.losses}-{row.draws} · {row.margin >= 0 ? '+' : ''}{row.margin}</span>
+                <span class="lb-depth">{row.score} pts</span>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      </div>
 
       {#if matchups.length > 0}
-        <h3>Your matchups</h3>
-        <div class="stage" bind:this={stageEl}></div>
-        <ul class="matchups">
-          {#each matchups as m}
-            <li class={m.outcome}>
-              <span class="tag">{m.outcome}</span>
-              <span>vs {m.opp}</span>
-              <button onclick={() => watch(m)} disabled={playing}>▶ Watch</button>
-            </li>
-          {/each}
-        </ul>
+        <div class="horde-panel matchups-panel">
+          <div class="panel-label row-label"><span>your matchups</span></div>
+          <div class="stage" bind:this={stageEl}></div>
+          <ul class="matchups">
+            {#each matchups as m}
+              <li class={m.outcome}>
+                <span class="tag">{m.outcome}</span>
+                <span class="opp">vs {m.opp}</span>
+                <button class="watch" onclick={() => watch(m)} disabled={playing}>▶ watch</button>
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
     </section>
   {/if}
 </main>
 
 <style>
-  .pvp {
-    max-width: 720px;
+  main {
+    max-width: 940px;
     margin: 0 auto;
-    padding: 1rem;
-    color: #e8e2d8;
-    font-family: system-ui, sans-serif;
+    padding: 24px 16px 48px;
+    text-align: center;
   }
-  header {
+
+  h1 {
+    margin: 0;
+    font-size: 28px;
+    letter-spacing: 6px;
+    color: var(--ink);
+  }
+
+  .sub {
+    margin: 4px 0 16px;
+    color: var(--ink-dim);
+    font-size: 13px;
+  }
+
+  .compendium-nav {
     display: flex;
-    align-items: baseline;
+    justify-content: center;
+    gap: 8px;
+    margin: 0 0 16px;
+  }
+
+  .compendium-nav button {
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--ink);
+    background: #241a14;
+    border: 1px solid #4a3520;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .compendium-nav button.active {
+    color: #f0e6d2;
+    border-color: var(--accent);
+  }
+
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .build { max-width: 620px; margin: 0 auto 16px; text-align: left; }
+
+  .hint { color: var(--ink-dim); line-height: 1.4; font-size: 13px; margin: 0 0 12px; }
+
+  .status-row {
+    display: flex;
     justify-content: space-between;
-    gap: 1rem;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
     flex-wrap: wrap;
   }
-  h1 { font-size: 1.4rem; margin: 0; }
-  .round { font-size: 0.8rem; opacity: 0.6; }
-  nav button, .submit, .roster button, .matchups button, .x {
-    cursor: pointer;
-    background: #2b2620;
-    color: #e8e2d8;
-    border: 1px solid #4a4136;
+
+  .scrap { font-size: 16px; color: #d4af37; }
+
+  .name input {
+    padding: 6px 8px;
     border-radius: 6px;
-    padding: 0.4rem 0.7rem;
-    font: inherit;
+    border: 1px solid #4a3520;
+    background: #241a14;
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 13px;
   }
-  nav button.active { background: #8a4b2f; border-color: #a8623f; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  .hint { opacity: 0.85; line-height: 1.4; }
-  .name input { padding: 0.3rem; border-radius: 6px; border: 1px solid #4a4136; background: #1a1712; color: inherit; }
-  .scrap { margin: 0.6rem 0; }
-  .scrap .broke { color: #e06b5a; }
-  .roster { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.6rem; }
-  .card { background: #1f1b16; border: 1px solid #3a332a; border-radius: 8px; padding: 0.6rem; }
-  .card-head { display: flex; justify-content: space-between; font-size: 0.8rem; opacity: 0.8; }
-  .role { color: #d9a441; font-weight: 700; }
-  .dname { font-weight: 600; margin-top: 0.2rem; }
-  .stats { font-size: 0.85rem; opacity: 0.8; }
-  .blurb { font-size: 0.75rem; opacity: 0.7; margin: 0.3rem 0; min-height: 2.2em; }
-  .card button { width: 100%; }
-  .sub { font-size: 0.75rem; opacity: 0.6; font-weight: 400; }
-  .board { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .board li { display: flex; align-items: center; gap: 0.4rem; background: #26211b; border: 1px solid #3a332a; border-radius: 6px; padding: 0.3rem 0.5rem; }
-  .board .pos { font-size: 0.7rem; opacity: 0.6; }
-  .board .x { padding: 0 0.4rem; line-height: 1; }
-  .empty { opacity: 0.6; }
-  .submit { margin-top: 0.8rem; background: #8a4b2f; border-color: #a8623f; font-weight: 600; }
-  .ok { color: #7fbf6a; }
-  .err { color: #e06b5a; }
-  .lb { list-style: none; padding: 0; }
-  .lb li { display: grid; grid-template-columns: 2rem 1fr auto auto; gap: 0.6rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid #2a251f; align-items: center; }
-  .lb li.me { background: #2b2620; border-radius: 6px; }
-  .lb .rank { opacity: 0.6; }
-  .lb .score { font-weight: 700; }
-  .lb .wld { font-size: 0.8rem; opacity: 0.7; }
-  .stage { margin: 0.6rem 0; min-height: 60px; }
+
+  .panel-label { font-size: 12px; color: var(--ink-dim); }
+
+  .row-label {
+    display: flex;
+    justify-content: space-between;
+    margin: 0 2px 8px;
+  }
+
+  .horde-panel {
+    padding: 10px 12px 12px;
+    border: 1.5px solid #6b4a2a;
+    border-radius: 10px;
+    background: #1c150f;
+    margin-bottom: 12px;
+  }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .roster-board { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+
+  .tile {
+    position: relative;
+    min-width: 0;
+    min-height: 86px;
+    padding: 7px 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    background: #241a14;
+    border: 1px solid #4a3520;
+    border-radius: 8px;
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .tile-name {
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.15;
+    overflow-wrap: break-word;
+  }
+
+  .tile-stats {
+    font-size: 14px;
+    font-weight: bold;
+    color: #f0e6d2;
+  }
+
+  .tile-sub {
+    font-size: 10px;
+    color: var(--ink-dim);
+    line-height: 1.2;
+    overflow-wrap: break-word;
+  }
+
+  .tile-sub.role {
+    color: #d9a441;
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 10px;
+  }
+
+  .tile-cost { font-size: 11px; color: #d4af37; }
+
+  .lb-empty {
+    margin: 4px 0;
+    font-size: 13px;
+    color: var(--ink-dim);
+  }
+
+  .ride {
+    margin-top: 4px;
+    padding: 10px 28px;
+    font-family: inherit;
+    font-size: 16px;
+    letter-spacing: 2px;
+    color: var(--ink);
+    background: var(--accent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    width: 100%;
+  }
+
+  .ride:disabled { opacity: 0.5; cursor: wait; }
+
+  .ok { margin-top: 8px; font-size: 13px; color: #7fbf6a; }
+  .err { margin-top: 8px; font-size: 13px; color: #d8452e; }
+
+  .results { max-width: 620px; margin: 0 auto; text-align: left; }
+
+  .leaderboard {
+    max-width: 620px;
+    margin: 0 auto;
+    padding: 12px 14px 14px;
+    border: 1px solid #322820;
+    border-radius: 10px;
+    background: #14100c;
+    text-align: left;
+  }
+
+  .lb-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .lb-refresh {
+    min-width: 40px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 10px;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: #241a14;
+    border: 1px solid #4a3520;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .lb-refresh:disabled { opacity: 0.5; cursor: default; }
+
+  .lb-rows { list-style: none; margin: 10px 0 0; padding: 0; }
+
+  .lb-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+
+  .lb-row:nth-child(odd) { background: #1a140f; }
+  .lb-row.me { background: #2c2415; color: #f0e6d2; }
+
+  .lb-rank {
+    min-width: 24px;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .lb-row.me .lb-rank { color: #d4af37; }
+
+  .lb-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lb-boss {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .lb-depth {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    color: #d4af37;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .matchups-panel { margin-top: 14px; }
+
+  .stage { margin: 6px 0; min-height: 60px; }
   .stage :global(canvas) { max-width: 100%; height: auto; border-radius: 8px; }
-  .matchups { list-style: none; padding: 0; }
-  .matchups li { display: flex; align-items: center; gap: 0.6rem; padding: 0.3rem 0; }
-  .matchups .tag { text-transform: uppercase; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; }
-  .matchups li.win .tag { background: #2f5a2f; }
-  .matchups li.loss .tag { background: #5a2f2f; }
-  .matchups li.draw .tag { background: #4a4136; }
+
+  .matchups { list-style: none; padding: 0; margin: 0; }
+  .matchups li { display: flex; align-items: center; gap: 10px; padding: 5px 8px; font-size: 14px; }
+  .matchups .opp { flex: 1; }
+  .matchups .tag {
+    text-transform: uppercase;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  .matchups li.win .tag { background: #2f5a2f; color: #d8f0cf; }
+  .matchups li.loss .tag { background: #5a2f2f; color: #f0d4cf; }
+  .matchups li.draw .tag { background: #4a3520; color: #e8dcc9; }
+
+  .watch {
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--ink);
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
 </style>
