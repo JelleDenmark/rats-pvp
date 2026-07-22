@@ -709,6 +709,26 @@ export interface UnitDef {
    */
   damageReduction?: number;
   /**
+   * PvP innate combat traits (Rats PvP fork). These bake a relic effect into
+   * the unit itself so the counter triangle can live in unit kits with the
+   * relic *economy* removed — see docs/design/pvp-notes.md. Absent on every
+   * WRAD unit, so PvE combat is unchanged.
+   *
+   * `cleaveOverkill`: overkill damage from a lethal clash spills to the next
+   * foe once (mirror of the Gore-Cleaver relic). `executeThreshold`: a clash
+   * blow that crosses the foe from above this fraction of its max health to at
+   * or below it kills it outright (mirror of Marrow-Snap) — the pierce mechanic
+   * that lets an aggressor punch through a high-HP reflect wall.
+   */
+  cleaveOverkill?: boolean;
+  executeThreshold?: number;
+  /**
+   * Rats PvP fork: this unit belongs to the PvP roster only. Kept in UNIT_DEFS
+   * (so the duel sim can instantiate it) but filtered out of the PvE shop pool
+   * (`SHOP_UNIT_POOL` in shop.ts), so the WRAD gauntlet game never sees it.
+   */
+  pvpOnly?: boolean;
+  /**
    * Day-gated shop availability (issue #12), same mechanism as
    * `boardCapForDay` — a pure function of the expedition day, no new
    * per-account state. Absent = available from day 1 (every pre-existing
@@ -1146,6 +1166,30 @@ export const UNIT_DEFS: Record<string, UnitDef> = {
     id: 'gutter-acolyte', name: 'Gutter-Acolyte', attack: 2, health: 3, cost: 5,
     ability: { trigger: 'startOfWave', effect: { kind: 'weakenAllEnemies', attack: 1 } },
     tribe: 'plague',
+  },
+
+  // ---- Rats PvP fork: self-contained PvP counter triangle -------------------
+  // WALL > THORN > BRUISER > WALL — relic-free (mechanics are innate), decisive,
+  // seat-stable, and every mirror draws (see test/duel.test.ts and
+  // docs/design/pvp-notes.md). `pvpOnly` keeps them out of the PvE shop, so the
+  // WRAD gauntlet is untouched. Stats are a first tuning pass (cost 16 → a
+  // six-rat board fits the 100-scrap prototype budget).
+  'plate-rat': {
+    // WALL: armor floors both the aggressor's big hits and the thorn's tiny one.
+    id: 'plate-rat', name: 'Plate-Rat', attack: 3, health: 7, cost: 16,
+    damageReduction: 3, pvpOnly: true,
+  },
+  'bramble-rat': {
+    // THORN: reflect outpaces the bruiser's lifesteal; folds to armor.
+    id: 'bramble-rat', name: 'Bramble-Rat', attack: 1, health: 9, cost: 16,
+    ability: { trigger: 'onHurt', effect: { kind: 'reflectDamage', damage: 4 } },
+    pvpOnly: true,
+  },
+  'gorge-rat': {
+    // BRUISER: out-sustains the wall's floored chip; folds to reflect.
+    id: 'gorge-rat', name: 'Gorge-Rat', attack: 4, health: 6, cost: 16,
+    ability: { trigger: 'afterAttack', effect: { kind: 'healSelf', amount: 3 } },
+    pvpOnly: true,
   },
 };
 

@@ -11,6 +11,7 @@
     "balance": "npm run balance -w @wrad/core",
     "snowball": "npm run snowball -w @wrad/core",
     "leaderboard-duels": "npm run leaderboard-duels -w @wrad/core",
-    "win-matrix": "npm run win-matrix -w @wrad/core"
+    "win-matrix": "npm run win-matrix -w @wrad/core",
+    "round-sim": "npm run round-sim -w @wrad/core"
   }
 }

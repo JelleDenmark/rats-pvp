@@ -120,6 +120,10 @@ interface BattleUnit {
   tailCharmUsed: boolean;
   /** Flat armor against 'attack' damage; see UnitDef.damageReduction. */
   damageReduction: number;
+  /** PvP innate combat traits (see UnitDef). Baked onto the instance so the
+   * clash resolver can honor them alongside the equivalent relic flags. */
+  cleaveOverkill: boolean;
+  executeThreshold?: number;
   /** `startOfBattle` fires once per unit instance, ever — never again on later waves. */
   startOfBattleFired: boolean;
   /** A corpse may be raised once per battle. Guards the two-reviver loop. */
@@ -281,6 +285,8 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
       firstAttackDone: false,
       tailCharmUsed: false,
       damageReduction: (def.damageReduction ?? 0) * tier,
+      cleaveOverkill: def.cleaveOverkill ?? false,
+      executeThreshold: def.executeThreshold,
       startOfBattleFired: false,
       raised: false,
       chargeStacks: 0,
@@ -1175,9 +1181,11 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
       // (a kill is a kill, not an execute) and skips a foe a surviveLethal
       // relic just rescued to 1 health.
       const executeRelic = front.relics.find((r) => r.executeThreshold !== undefined);
-      const executeCutoff = executeRelic ? foe.maxHealth * executeRelic.executeThreshold! : 0;
-      if (executeRelic && foe.health > 0 && foeHealthBeforeClash > executeCutoff && foe.health <= executeCutoff) {
-        events.push({ type: 'relicProc', targetId: front.instanceId, relicId: executeRelic.id, name: executeRelic.name });
+      // Threshold from the unit's own innate trait (PvP) OR an equipped relic.
+      const executeThreshold = front.executeThreshold ?? executeRelic?.executeThreshold;
+      const executeCutoff = executeThreshold !== undefined ? foe.maxHealth * executeThreshold : 0;
+      if (executeThreshold !== undefined && foe.health > 0 && foeHealthBeforeClash > executeCutoff && foe.health <= executeCutoff) {
+        events.push({ type: 'relicProc', targetId: front.instanceId, relicId: executeRelic?.id ?? front.defId, name: executeRelic?.name ?? front.name });
         // Finish the foe directly rather than routing through applyDamage:
         // this is a kill-condition check, not a fresh attack, so it must not
         // be blunted by the foe's own armor (damageReduction) the way a
@@ -1191,7 +1199,7 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
       // carries to the next enemy in line, once, no chaining. Guard against
       // Tail-Charm (or any future surviveLethal) actually saving the foe —
       // check post-applyDamage health, not just the raw overkill math.
-      if (front.relics.some((r) => r.cleaveOverkill) && foe.health <= 0) {
+      if ((front.cleaveOverkill || front.relics.some((r) => r.cleaveOverkill)) && foe.health <= 0) {
         // Carry what actually spilled past the kill, i.e. how far the foe's
         // health went negative — not the raw swing, which armor may have
         // blunted before it landed.

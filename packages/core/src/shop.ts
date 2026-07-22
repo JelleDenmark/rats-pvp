@@ -251,6 +251,7 @@ const SHOP_UNIT_POOL = Object.values(UNIT_DEFS).filter(
     // browsable — excluding by cost covers every current and future one
     // without an ever-growing id blocklist.
     u.cost > 0 &&
+    !u.pvpOnly &&
     u.id !== 'blight-witch' &&
     u.id !== 'md-rattyfock' &&
     u.id !== 'dawn-runt' &&
