@@ -1,8 +1,12 @@
 name: Deploy to GitHub Pages
 
+# Rats PvP fork: single-branch deploy (master → prod at site root). The upstream
+# WRAD workflow built two channels (master=prod at /, dev at /dev/); this fork
+# has no dev branch, so we keep it simple. Vite's base is './' (relative asset
+# paths) so it works under the project-site subpath with no repo-name hardcoding.
 on:
   push:
-    branches: [master, dev]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -19,41 +23,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
-          path: prod
-      - uses: actions/checkout@v4
-        with:
-          ref: dev
-          path: dev
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - uses: actions/configure-pages@v5
         with:
           enablement: true
-      - name: Build prod (master)
-        working-directory: prod
+      - name: Build
         env:
           VITE_CHANNEL: prod
         run: |
           npm ci
           npm run build
-      - name: Build dev (dev branch)
-        working-directory: dev
-        env:
-          VITE_CHANNEL: dev
-        run: |
-          npm ci
-          npm run build
-      - name: Assemble site (prod at /, dev at /dev/)
-        run: |
-          mkdir -p site/dev
-          cp -r prod/packages/app/dist/. site/
-          cp -r dev/packages/app/dist/. site/dev/
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: packages/app/dist
 
   deploy:
     needs: build
