@@ -26,6 +26,7 @@
     "leaderboard-duels": "tsx scripts/leaderboard-duels.ts",
     "win-matrix": "tsx scripts/win-matrix.ts",
     "round-sim": "tsx scripts/round-sim.ts",
+    "run-round": "tsx scripts/run-round.ts",
     "balance:t2-percentiles": "tsx scripts/t2-percentiles.ts"
   },
   "devDependencies": {

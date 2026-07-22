@@ -11,9 +11,12 @@ player. See `packages/core/src/duel.ts` (`simulateDuel`).
   we diverge from WRAD's economy; a persistent bank is unfair in PvP).
 - **Rounds.** Every **2 hours**, every submitted board fights **every other**
   board (all-vs-all round robin).
-- **Scoring.** Per battle: **+1 per surviving ally, −1 per surviving enemy**.
-  Round score = sum across all opponents. Zero-sum and margin-sensitive — a
-  decisive stomp is worth far more than a squeaker.
+- **Scoring.** Football-style match points — **win 3, draw 1, loss 0** — summed
+  across all opponents. The **survivor differential** (your survivors − theirs)
+  is a separate "goal difference" **tiebreak**, so the standings reward winning
+  without a few decisive stomps running away with the round. (Started as a raw
+  +1/−1 survivor margin; softened to points after the round-sim showed it was
+  too swingy — trivially tunable in `run-round.ts`.)
 - Prototype simulator: `npm run round-sim`.
 
 ## Combat model

@@ -6,10 +6,10 @@
  *     economy — no accrual, no snowball; see docs/design/pvp-notes.md).
  *   - Every 2 hours a ROUND fires: every submitted board fights every other
  *     board (all-vs-all round robin).
- *   - Scoring per battle: +1 for each of YOUR units left standing, -1 for each
- *     ENEMY unit left standing. Your round score is the sum across all
- *     opponents. It's zero-sum and margin-sensitive — a decisive stomp is worth
- *     far more than a squeaker.
+ *   - Scoring: football-style match points — win 3, draw 1, loss 0 — summed
+ *     across all opponents. The survivor differential (your survivors − theirs)
+ *     is tracked separately as a "goal difference" tiebreak, so the standings
+ *     reward winning without a few decisive stomps running away with the round.
  *
  * This script simulates one round over a sample population to show how the
  * format behaves: whether the counter triangle actually drives the standings,
@@ -66,12 +66,14 @@ function main() {
   }
 
   const n = PLAYERS.length;
-  const score = new Array(n).fill(0);
   const wins = new Array(n).fill(0);
   const losses = new Array(n).fill(0);
   const draws = new Array(n).fill(0);
+  const margin = new Array(n).fill(0); // survivor differential (tiebreak only)
 
-  // All-vs-all, each pair home AND away; score = your survivors - their survivors.
+  // All-vs-all, each pair home AND away. Points: win 3 / draw 1 / loss 0.
+  // Margin (your survivors − theirs) is a separate "goal difference" tiebreak,
+  // so the headline score isn't dominated by a few decisive stomps.
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       for (const [a, b] of [
@@ -80,8 +82,8 @@ function main() {
       ] as [number, number][]) {
         const r = simulateDuel(PLAYERS[a].lineup, PLAYERS[b].lineup).result;
         const marginA = r.survivorsA.length - r.survivorsB.length;
-        score[a] += marginA;
-        score[b] -= marginA;
+        margin[a] += marginA;
+        margin[b] -= marginA;
         if (r.winner === 'a') {
           wins[a]++; losses[b]++;
         } else if (r.winner === 'b') {
@@ -93,13 +95,14 @@ function main() {
     }
   }
 
-  const order = [...PLAYERS.keys()].sort((a, b) => score[b] - score[a]);
-  console.log('\nRound standings (score = surviving allies − surviving enemies, summed):');
-  console.log(`  ${pad('#', 3)}${pad('player', 22)}${pad('score', 7)}${pad('W', 4)}${pad('L', 4)}${pad('D', 4)}`);
+  const points = (i: number) => wins[i] * 3 + draws[i];
+  const order = [...PLAYERS.keys()].sort((a, b) => points(b) - points(a) || margin[b] - margin[a]);
+  console.log('\nRound standings (points: win 3 / draw 1 / loss 0; margin breaks ties):');
+  console.log(`  ${pad('#', 3)}${pad('player', 22)}${pad('pts', 5)}${pad('W', 4)}${pad('L', 4)}${pad('D', 4)}${pad('margin', 7)}`);
   for (let k = 0; k < order.length; k++) {
     const i = order[k];
     console.log(
-      `  ${pad(String(k + 1), 3)}${pad(PLAYERS[i].name, 22)}${pad((score[i] >= 0 ? '+' : '') + score[i], 7)}${pad(String(wins[i]), 4)}${pad(String(losses[i]), 4)}${pad(String(draws[i]), 4)}`
+      `  ${pad(String(k + 1), 3)}${pad(PLAYERS[i].name, 22)}${pad(String(points(i)), 5)}${pad(String(wins[i]), 4)}${pad(String(losses[i]), 4)}${pad(String(draws[i]), 4)}${pad((margin[i] >= 0 ? '+' : '') + margin[i], 7)}`
     );
   }
   console.log('\n  (this lobby is skewed toward WALL; watch where its counter, BRUISER, lands)\n');
