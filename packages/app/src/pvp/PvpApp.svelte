@@ -101,6 +101,7 @@
 
   let standings = $state<ResultRow[]>([]);
   let matchups = $state<Matchup[]>([]);
+  let submittedCount = $state(0);
   let loadingResults = $state(false);
   const me = deviceId();
 
@@ -113,6 +114,20 @@
         { headers: HEADERS }
       );
       standings = sres.ok ? await sres.json() : [];
+
+      // Only reveal matchups once the round has actually been closed by
+      // `npm run run-round` — otherwise submitting a board would leak the
+      // outcome against everyone submitted so far, before the round is final.
+      if (standings.length === 0) {
+        matchups = [];
+        const cres = await fetch(
+          `${SUPABASE_URL}/rest/v1/pvp_boards?round_id=eq.${encodeURIComponent(roundId)}` +
+            `&select=device_id&limit=1000`,
+          { headers: HEADERS }
+        );
+        submittedCount = cres.ok ? ((await cres.json()) as unknown[]).length : 0;
+        return;
+      }
 
       const bres = await fetch(
         `${SUPABASE_URL}/rest/v1/pvp_boards?round_id=eq.${encodeURIComponent(roundId)}` +
@@ -232,7 +247,10 @@
       {#if loadingResults}
         <p>Loading…</p>
       {:else if standings.length === 0}
-        <p class="empty">No standings yet — this round hasn't been run.</p>
+        <p class="empty">
+          {submittedCount} {submittedCount === 1 ? 'player has' : 'players have'} submitted a board so far.
+          Results stay hidden until the round is closed.
+        </p>
       {:else}
         <ol class="lb">
           {#each standings as row}
