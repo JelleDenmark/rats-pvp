@@ -28,30 +28,67 @@ interface Board {
 
 const u = (defId: string, tier = 2, relicIds: string[] = []) => ({ defId, tier, relicIds });
 
-// ---- PROVISIONAL role boards (existing units, tier 2, 6 seats) -------------
+// ---- FIRST-PASS PvP roster: an emergent counter triangle -------------------
+// AGGRO > REFLECT-TANK > SNIPER > AGGRO, all tier 2, 6 seats, from 8 distinct
+// existing units (+ rusted-nail / gore-cleaver). Not finely balanced yet — the
+// goal of this pass was only to make the cycle CLOSE (see the tuning notes in
+// the session / plan). Two format findings drove the roster choice:
+//   * poison-all (Draughtsman-Moe / Blight-Witch) is degenerate in a single
+//     wave — it ignores armor AND position and beats everything, so it's left
+//     out of the v1 subset;
+//   * the WRAD "swarm" summoners are balanced for a 45-wave ride where summons
+//     refresh each wave, so they're toothless in a one-wave duel — "Aggro"
+//     (burst bruisers) fills that slot instead.
+// The triangle's logic:
+//   Sniper > Aggro       Slink-Rat's backlineDamage bypasses reflect and picks
+//                        the aggro bruisers apart before they grind in.
+//   Reflect-Tank > Sniper  Big HP pools soak the sniper's flat chip.
+//   Aggro > Reflect-Tank  Raw attack + Gore-Cleaver overkill punches through
+//                        faster than Steel-Whisker's reflect can punish.
 const BOARDS: Board[] = [
   {
-    name: 'SWARM',
-    // Many bodies + summon cascades: pups (Rat-Piper) and the Brood-Mother
-    // babushka flood the board; Gnawer bequeaths attack on death.
+    name: 'AGGRO',
+    // High-attack bruisers with +2 attack (Rusted Nail) and overkill spill
+    // (Gore-Cleaver on the Corpse-Glutton, which also snowballs off ally deaths).
     lineup: {
-      units: [u('rat-piper'), u('rat-piper'), u('brood-mother'), u('brood-mother'), u('gnawer'), u('gnawer')],
+      units: [
+        u('dire-rat', 2, ['rusted-nail']),
+        u('corpse-glutton', 2, ['rusted-nail', 'gore-cleaver']),
+        u('gnawer', 2, ['rusted-nail']),
+        u('gnawer', 2, ['rusted-nail']),
+        u('dire-rat', 2, ['rusted-nail']),
+        u('press-kin'),
+      ],
     },
   },
   {
-    name: 'TANK',
-    // Armor (Dire-Rat), block charges (Ward-Weaver), reflect (Steel-Whisker),
-    // big HP anchors (Warren-Warden, MD Rattyfock), adjacency buff (Press-Kin).
+    name: 'REFLECT-TANK',
+    // High HP + thorns (Steel-Whisker reflects clash damage), deliberately LOW
+    // armor so it walls flat-damage snipers by health, not by damage-reduction.
     lineup: {
-      units: [u('dire-rat'), u('ward-weaver'), u('warren-warden'), u('steel-whisker'), u('md-rattyfock'), u('press-kin')],
+      units: [
+        u('steel-whisker'),
+        u('steel-whisker'),
+        u('warren-warden'),
+        u('md-rattyfock'),
+        u('warren-warden'),
+        u('press-kin'),
+      ],
     },
   },
   {
     name: 'SNIPER',
-    // A couple of bodies up front protecting a back rank of Slink-Rats, each
-    // of which hits the enemy front line every wave (backlineDamage).
+    // A big soak up front (Warren-Warden) buys time for a back rank of
+    // Slink-Rats to hit the enemy front line every wave (backlineDamage).
     lineup: {
-      units: [u('dire-rat'), u('press-kin'), u('slink-rat'), u('slink-rat'), u('slink-rat'), u('slink-rat')],
+      units: [
+        u('warren-warden'),
+        u('press-kin'),
+        u('slink-rat'),
+        u('slink-rat'),
+        u('slink-rat'),
+        u('slink-rat'),
+      ],
     },
   },
 ];
