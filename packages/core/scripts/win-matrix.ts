@@ -53,6 +53,12 @@ const BOARDS: Board[] = [
   roleBoard('plate-rat', 'WALL'),
   roleBoard('bramble-rat', 'THORN'),
   roleBoard('gorge-rat', 'BRUISER'),
+  // Issue #1: imported 2nd-per-role picks (see data/units.ts) — checked
+  // in-role against the originals and cross-role against every other role
+  // so a strong horde can't dodge the triangle by picking the "alt" body.
+  roleBoard('dire-rat-pvp', 'WALL-2'),
+  roleBoard('steel-whisker-pvp', 'THORN-2'),
+  roleBoard('grave-leech-pvp', 'BRUISER-2'),
 ];
 
 // ---------------------------------------------------------------------------

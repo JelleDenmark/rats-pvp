@@ -1191,6 +1191,42 @@ export const UNIT_DEFS: Record<string, UnitDef> = {
     ability: { trigger: 'afterAttack', effect: { kind: 'healSelf', amount: 3 } },
     pvpOnly: true,
   },
+
+  // ---- Issue #1: grow the triangle 1 -> 2 per role by IMPORTING existing
+  // WRAD kits instead of designing new mechanics from scratch. All three PvE
+  // roster mates below already carry the exact `damageReduction` /
+  // `reflectDamage` / `healSelf` shapes the triangle is built on (Dire-Rat
+  // #956, Steel-Whisker #1138, Grave-Leech #1153) — repriced to the PvP
+  // cost-16 flat economy and re-tuned only enough to sit as a genuine
+  // in-role alternative (not a strict upgrade/downgrade) of the original
+  // pick, per the issue's "no dead role, no need for 100% balance" bar.
+  // Verified with `npm run win-matrix` (extended fixture) — see
+  // docs/design/pvp-notes.md.
+  'dire-rat-pvp': {
+    // WALL alt: imported from Dire-Rat (PvE) — a softer wall than Plate-Rat,
+    // trading a point of armor for more health (2/9 vs 3/7), so it survives
+    // longer against anything that clears its lower floor instead of
+    // stonewalling outright.
+    id: 'dire-rat-pvp', name: 'Dire-Rat', attack: 3, health: 9, cost: 16,
+    damageReduction: 2, pvpOnly: true,
+  },
+  'steel-whisker-pvp': {
+    // THORN alt: imported from Steel-Whisker (PvE) — Bramble-Rat's reflect
+    // plus a point of armor, at lower reflect damage and health, so it's a
+    // tankier-but-milder thorn rather than a strict upgrade.
+    id: 'steel-whisker-pvp', name: 'Steel-Whisker', attack: 3, health: 7, cost: 16,
+    damageReduction: 1,
+    ability: { trigger: 'onHurt', effect: { kind: 'reflectDamage', damage: 3 } },
+    pvpOnly: true,
+  },
+  'grave-leech-pvp': {
+    // BRUISER alt: imported from Grave-Leech (PvE) — higher attack, lower
+    // health and a smaller per-hit drain than Gorge-Rat, an aggressive
+    // glass-cannon lifesteal build vs. Gorge-Rat's sturdier sustain.
+    id: 'grave-leech-pvp', name: 'Grave-Leech', attack: 6, health: 5, cost: 16,
+    ability: { trigger: 'afterAttack', effect: { kind: 'healSelf', amount: 2 } },
+    pvpOnly: true,
+  },
 };
 
 /** Hardcoded showcase lineup until the shop lands (milestone 4). Index 0 = front. */

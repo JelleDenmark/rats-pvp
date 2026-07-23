@@ -36,18 +36,48 @@ player. See `packages/core/src/duel.ts` (`simulateDuel`).
 WALL  >  THORN  >  BRUISER  >  WALL
 ```
 
-Three dedicated PvP units (`data/units.ts`, flagged `pvpOnly` so the PvE shop
-never sees them), cost 16 (a 6-rat board = 96 ≤ 100):
+Six PvP units (`data/units.ts`, flagged `pvpOnly` so the PvE shop never sees
+them), cost 16 each (a 6-rat board = 96 ≤ 100):
 
 | Unit | Role | Stats | Innate mechanic |
 |------|------|-------|-----------------|
 | Plate-Rat | WALL | 3/7 | armor (damageReduction 3) |
 | Bramble-Rat | THORN | 1/9 | reflect 4 on being hit |
 | Gorge-Rat | BRUISER | 4/6 | lifesteal (heal 3 after each attack) |
+| Dire-Rat | WALL | 3/9 | armor (damageReduction 2) |
+| Steel-Whisker | THORN | 3/7 | armor 1 + reflect 3 on being hit |
+| Grave-Leech | BRUISER | 6/5 | lifesteal (heal 2 after each attack) |
 
-- **Wall > Thorn** — armor floors Bramble-Rat's tiny attack to nothing.
-- **Thorn > Bruiser** — reflect outpaces Gorge-Rat's lifesteal.
-- **Bruiser > Wall** — Gorge-Rat out-sustains Plate-Rat's armor-floored chip.
+- **Wall > Thorn** — armor floors the thorn's tiny attack to nothing.
+- **Thorn > Bruiser** — reflect outpaces the bruiser's lifesteal.
+- **Bruiser > Wall** — the bruiser out-sustains the wall's armor-floored chip.
+
+### Issue #1 — 1 -> 2 per role, imported from WRAD directly
+
+Rather than design new mechanics, the second unit per role is a **direct
+import of an existing WRAD PvE kit that already matches the role**: Dire-Rat
+(armor), Steel-Whisker (armor + reflect), and Grave-Leech (lifesteal) all
+already exist in `UNIT_DEFS` for the gauntlet — only their PvP stat lines and
+`pvpOnly` flag are new (`dire-rat-pvp` / `steel-whisker-pvp` /
+`grave-leech-pvp` ids, since the PvE originals stay in the shop pool at their
+own PvE cost/stats). Each import is tuned to be a genuine **in-role
+alternative**, not a strict upgrade or downgrade of the original pick:
+
+- **Dire-Rat** trades a point of armor for two more health than Plate-Rat — a
+  softer wall that outlasts chip damage instead of stonewalling it.
+- **Steel-Whisker** is Bramble-Rat's reflect plus a point of armor, at lower
+  reflect damage — tankier but milder.
+- **Grave-Leech** is a glass-cannon lifesteal build: more attack, less health
+  and a smaller per-hit drain than Gorge-Rat.
+
+Verified with `npm run win-matrix` (fixture extended to all 6 boards, per the
+issue's instruction to extend the fixture as units are added): the alt trio
+reproduces the same `WALL > THORN > BRUISER > WALL` cycle
+(`BRUISER > WALL-2 > THORN-2 > BRUISER` — the identical directed cycle,
+rotated), and every one of the 6 boards has at least one decisive win in the
+full round-robin — no role/pick is a dead choice. Per the issue's explicit
+guardrail, no attempt was made to flatten the matrix to 100% balance beyond
+that bar.
 
 ### How we got here (the balance findings)
 
