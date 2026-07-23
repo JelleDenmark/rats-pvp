@@ -28,9 +28,14 @@ const SUPABASE_ANON_KEY = 'sb_publishable_6S2kGgYAI2gRLhfRxXBY3A_E_mIgpAi';
 
 const ROUND = process.argv[2];
 if (!ROUND) {
-  console.error('usage: npm run run-round -- <round_id>');
+  console.error('usage: npm run run-round -- <round_id> [--dry]');
   process.exit(1);
 }
+// --dry (or a bare `dry` token) forces a preview even when the service key is
+// present: compute and print the standings but write nothing (the "status"
+// control action). Both spellings are accepted so it survives npm's flag
+// munging whether invoked via `-w @wrad/core --` or the root wrapper script.
+const DRY = process.argv.slice(3).some((a) => a === '--dry' || a === 'dry');
 
 /** Minimal .env loader (tsx does not auto-load one). Repo-root .env, KEY=VALUE. */
 function serviceKey(): string | undefined {
@@ -151,9 +156,10 @@ async function main() {
     };
   });
 
-  const key = serviceKey();
+  const key = DRY ? undefined : serviceKey();
   if (!key) {
-    console.log('\n(DRY RUN — no SUPABASE_SERVICE_ROLE_KEY found; nothing written.)\n');
+    const why = DRY ? '--dry requested' : 'no SUPABASE_SERVICE_ROLE_KEY found';
+    console.log(`\n(DRY RUN — ${why}; nothing written.)\n`);
     return;
   }
   await writeResults(rows, key);

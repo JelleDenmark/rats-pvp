@@ -13,6 +13,7 @@
     "leaderboard-duels": "npm run leaderboard-duels -w @wrad/core",
     "win-matrix": "npm run win-matrix -w @wrad/core",
     "round-sim": "npm run round-sim -w @wrad/core",
-    "run-round": "npm run run-round -w @wrad/core"
+    "run-round": "npm run run-round -w @wrad/core",
+    "reset-round": "npm run reset-round -w @wrad/core"
   }
 }

@@ -1,0 +1,87 @@
+name: Rats control
+
+# The phone-friendly PvP control panel. No schedule — it runs ONLY when you tap
+# "Run workflow" (GitHub Actions tab on the website, or the GitHub mobile app),
+# so it replaces the terminal `npm run run-round` / reset step entirely.
+#
+#   run    — close a round: compute all-vs-all standings and write pvp_results.
+#   status — preview only: how many boards are in + the standings, writing nothing.
+#   reset  — DESTRUCTIVE: wipe a round's boards AND standings so it can replay.
+#            Guard: you must set confirm_round to the same round id.
+#
+# The service-role key is read from the SUPABASE_SERVICE_ROLE_KEY repo secret
+# (Settings → Secrets and variables → Actions). It is never printed. Only users
+# with write access to the repo can trigger workflow_dispatch, so this is the
+# gate on who can close/reset rounds.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to do'
+        type: choice
+        required: true
+        default: status
+        options:
+          - status
+          - run
+          - reset
+      round:
+        description: 'Round id (e.g. r1, r2)'
+        type: string
+        required: true
+        default: r1
+      confirm_round:
+        description: 'RESET ONLY — retype the round id here to confirm the wipe'
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  # Never let two round operations touch the same round at once.
+  group: rats-control-${{ github.event.inputs.round }}
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install deps
+        run: npm ci
+
+      - name: Guard reset confirmation
+        if: ${{ github.event.inputs.action == 'reset' }}
+        run: |
+          if [ "${{ github.event.inputs.confirm_round }}" != "${{ github.event.inputs.round }}" ]; then
+            echo "::error::RESET aborted — confirm_round must equal round ('${{ github.event.inputs.round }}'). You entered '${{ github.event.inputs.confirm_round }}'."
+            exit 1
+          fi
+          echo "Confirmation matches — proceeding with reset of '${{ github.event.inputs.round }}'."
+
+      # NOTE: the `-w @wrad/core --` form is required so flags (--dry/--confirm)
+      # reach the script. The root wrapper scripts drop flags (nested npm eats
+      # them), which is why we scope to the workspace directly here.
+      - name: Status (preview standings, write nothing)
+        if: ${{ github.event.inputs.action == 'status' }}
+        run: npm run run-round -w @wrad/core -- "${{ github.event.inputs.round }}" --dry
+
+      - name: Run (close round, write standings)
+        if: ${{ github.event.inputs.action == 'run' }}
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run run-round -w @wrad/core -- "${{ github.event.inputs.round }}"
+
+      - name: Reset (wipe round)
+        if: ${{ github.event.inputs.action == 'reset' }}
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run reset-round -w @wrad/core -- "${{ github.event.inputs.round }}" --confirm "${{ github.event.inputs.confirm_round }}"
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          echo "### Rats control — ${{ github.event.inputs.action }} · round ${{ github.event.inputs.round }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Job status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"

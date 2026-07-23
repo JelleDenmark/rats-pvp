@@ -34,11 +34,22 @@ verified end-to-end against the deployed page.
    Players spend 100 scrap, build a board, hit **Submit**.
 
 2. **Close the round.** Once submissions are in, run the all-vs-all and write
-   standings:
+   standings. Two ways:
 
-   ```bash
-   npm run run-round -- r1
-   ```
+   - **Phone / browser (no terminal)** — GitHub → **Actions** tab → **Rats
+     control** → **Run workflow**. Pick `action: run`, `round: r1`, tap the
+     green button. Works from the GitHub mobile app too. `action: status` first
+     is a safe preview (writes nothing); `action: reset` wipes a round (retype
+     the round id in `confirm_round` to arm it). See `.github/workflows/rats-control.yml`.
+   - **Terminal** — still available:
+
+     ```bash
+     npm run run-round -- r1
+     ```
+
+   The control workflow needs the `SUPABASE_SERVICE_ROLE_KEY` **repo secret**
+   set once (Settings → Secrets and variables → Actions) — same value as the
+   local `.env`. Without it, `run`/`reset` fall back to a harmless dry-run.
 
 3. **Players see results.** They revisit the same URL → **Standings** tab shows
    the ranked board and their own matchups, each replayable in the Pixi stage
