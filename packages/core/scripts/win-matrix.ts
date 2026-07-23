@@ -59,6 +59,11 @@ const BOARDS: Board[] = [
   roleBoard('dire-rat-pvp', 'WALL-2'),
   roleBoard('steel-whisker-pvp', 'THORN-2'),
   roleBoard('grave-leech-pvp', 'BRUISER-2'),
+  // Issue #1 follow-up: Press-Kin — a 4th archetype OUTSIDE the triangle (pure
+  // buffAdjacent stats, no counter mechanic). Checked here to confirm it lands
+  // mid-table (viable, not dominant, not a dead pick) without disturbing the
+  // WALL > THORN > BRUISER cycle. See data/units.ts + docs/design/pvp-notes.md.
+  roleBoard('press-kin-pvp', 'PRESS'),
 ];
 
 // ---------------------------------------------------------------------------

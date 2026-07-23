@@ -1227,6 +1227,27 @@ export const UNIT_DEFS: Record<string, UnitDef> = {
     ability: { trigger: 'afterAttack', effect: { kind: 'healSelf', amount: 2 } },
     pvpOnly: true,
   },
+  // Issue #1 (follow-up): Press-Kin — imported from WRAD as a deliberate FOURTH
+  // archetype that sits OUTSIDE the armor/reflect/lifesteal triangle. It carries
+  // no counter mechanic (finding #1 in pvp-notes.md: pure stats can't make RPS),
+  // just a `startOfBattle` `buffAdjacent +2/+2` — symmetric and fires once per
+  // instance, so it's mirror-safe (the duel mirror test auto-covers it). Its
+  // identity in `win-matrix` is a RAW-BEEF stat-stick with a clean built-in
+  // counter: a mono-stack (4W/2L) beats both walls and both bruisers, but folds
+  // decisively to REFLECT — its buffed attackers just feed the thorns' return
+  // damage — so a thorn board is always its hard answer (a healthy self-
+  // correcting loop: press rises -> thorn rises -> press falls). A single copy
+  // is a build-around that pumps its two neighbours. Included per Jesper's call
+  // that build variety can exceed strict RPS purity, AFTER the empirical check
+  // that plague-bearer (poison targets the non-clashing back rat -> 0W dead
+  // pick) and brood-mother (single-wave summon underdelivers -> weak) both
+  // failed the "no dead pick" bar and were left out. Health tuned 5->6 (7 made
+  // it the dominant board); see docs/design/pvp-notes.md.
+  'press-kin-pvp': {
+    id: 'press-kin-pvp', name: 'Press-Kin', attack: 2, health: 6, cost: 16,
+    ability: { trigger: 'startOfBattle', effect: { kind: 'buffAdjacent', attack: 2, health: 2 } },
+    pvpOnly: true,
+  },
 };
 
 /** Hardcoded showcase lineup until the shop lands (milestone 4). Index 0 = front. */

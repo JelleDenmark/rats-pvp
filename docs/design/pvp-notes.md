@@ -47,6 +47,7 @@ them), cost 16 each (a 6-rat board = 96 ≤ 100):
 | Dire-Rat | WALL | 3/9 | armor (damageReduction 2) |
 | Steel-Whisker | THORN | 3/7 | armor 1 + reflect 3 on being hit |
 | Grave-Leech | BRUISER | 6/5 | lifesteal (heal 2 after each attack) |
+| Press-Kin | *(4th)* | 2/6 | buffAdjacent +2/+2 at startOfBattle |
 
 - **Wall > Thorn** — armor floors the thorn's tiny attack to nothing.
 - **Thorn > Bruiser** — reflect outpaces the bruiser's lifesteal.
@@ -70,14 +71,56 @@ alternative**, not a strict upgrade or downgrade of the original pick:
 - **Grave-Leech** is a glass-cannon lifesteal build: more attack, less health
   and a smaller per-hit drain than Gorge-Rat.
 
-Verified with `npm run win-matrix` (fixture extended to all 6 boards, per the
+Verified with `npm run win-matrix` (fixture extended to all boards, per the
 issue's instruction to extend the fixture as units are added): the alt trio
 reproduces the same `WALL > THORN > BRUISER > WALL` cycle
 (`BRUISER > WALL-2 > THORN-2 > BRUISER` — the identical directed cycle,
-rotated), and every one of the 6 boards has at least one decisive win in the
-full round-robin — no role/pick is a dead choice. Per the issue's explicit
+rotated), and every board has at least one decisive win in the full
+round-robin — no role/pick is a dead choice. Per the issue's explicit
 guardrail, no attempt was made to flatten the matrix to 100% balance beyond
 that bar.
+
+### Press-Kin — a deliberate 4th archetype (outside the triangle)
+
+Press-Kin is imported from WRAD as a **fourth pick that does NOT sit in the
+armor/reflect/lifesteal triangle**. It has no counter mechanic — just a
+symmetric, fire-once `buffAdjacent +2/+2` (`startOfBattle`), so it's
+mirror-safe (the duel mirror test auto-covers it). Its identity is a
+**raw-beef stat-stick with a clean built-in counter**: a mono-stack (4W/2L)
+beats both walls and both bruisers, but folds decisively to **reflect** — its
+buffed attackers just feed the thorns' return damage — so a thorn board is
+always its hard answer. That keeps the meta self-correcting (press rises →
+thorn rises → press falls) rather than letting a stat pick run away. Health
+was tuned 5 → 6 (7 made it the single dominant board). A single copy is a
+build-around that pumps its two neighbours.
+
+**Why not plague-bearer / brood-mother** (both proposed, both rejected after
+an empirical `win-matrix` pass): plague-bearer's `poisonLastEnemy` poisons the
+enemy's *back* rat — the one not in the single-wave clash — so a mono-stack
+went **0W/8L**, a hard dead pick. brood-mother's faint-summon underdelivers in
+one wave (the notes' known single-wave summon limitation), landing weak at
+2W/4L with no counter identity. Both would need a real rework (not a drop-in
+import) to earn a seat, so they're left out for now.
+
+## Placeholder art (issue #2)
+
+The `pvpOnly` roster has no dedicated art yet. `packages/app/src/art.ts` maps
+each PvP `defId` to an existing WRAD SVG portrait via a `PVP_ART_ALIASES` table
+(aliases, not file copies, so placeholders track their source). The two units
+imported wholesale from WRAD reuse their own art; the rest borrow a
+role-appropriate asset:
+
+| PvP unit | Placeholder art | Fit |
+|----------|-----------------|-----|
+| Plate-Rat | `culvert-knight` | full plate armor |
+| Bramble-Rat | `grate-golem` | sharp iron grate |
+| Gorge-Rat | `corpse-glutton` | bloated glutton |
+| Dire-Rat | `dire-rat` | own art (imported unit) |
+| Steel-Whisker | `sluice-bulwark` | riveted steel armor |
+| Grave-Leech | `dray-ogre` | hulking brute |
+| Press-Kin | `press-kin` | own art (imported unit) |
+
+Replace with dedicated PvP art when commissioned.
 
 ### How we got here (the balance findings)
 
