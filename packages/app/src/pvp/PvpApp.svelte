@@ -36,6 +36,7 @@
   let name = $state<string>(loadJSON('name', ''));
   let board = $state<string[]>(loadJSON('board', [])); // ordered defIds, index 0 = front
   let submitState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  let inspect = $state<{ area: 'roster' | 'board'; index: number } | null>(null);
 
   const spent = $derived(board.reduce((s, d) => s + cost(d), 0));
   const left = $derived(BUDGET - spent);
@@ -50,6 +51,14 @@
   }
   function removeAt(i: number) {
     board = board.filter((_, k) => k !== i);
+  }
+  function moveBoard(i: number, delta: number) {
+    const to = i + delta;
+    if (to < 0 || to >= board.length) return;
+    const b = [...board];
+    [b[i], b[to]] = [b[to], b[i]];
+    board = b;
+    inspect = { area: 'board', index: to };
   }
 
   function displayName(): string {
@@ -206,11 +215,11 @@
           <span>tap to add</span>
         </div>
         <div class="board roster-board">
-          {#each ROSTER as r}
+          {#each ROSTER as r, i}
             <button
               class="tile unit-tile"
-              disabled={cost(r.defId) > left || board.length >= BOARD_CAP}
-              onclick={() => add(r.defId)}
+              class:selected={inspect?.area === 'roster' && inspect.index === i}
+              onclick={() => (inspect = { area: 'roster', index: i })}
             >
               <span class="tile-sub role">{r.role}</span>
               <span class="tile-name">{UNIT_DEFS[r.defId].name}</span>
@@ -222,21 +231,26 @@
         </div>
       </div>
 
+      <div class="phase-divider"><span>your board</span></div>
+
       <div class="horde-panel">
         <div class="panel-label row-label">
-          <span>your board · {board.length}/{BOARD_CAP}</span>
+          <span>{board.length}/{BOARD_CAP} rats</span>
           <span>front → back, left clashes first</span>
         </div>
         {#if board.length === 0}
-          <p class="lb-empty">No rats yet — add some above.</p>
+          <p class="lb-empty">No rats yet — tap a roster rat above to add one.</p>
         {:else}
           <div class="board horde-board">
             {#each board as d, i}
-              <button class="tile unit-tile" onclick={() => removeAt(i)} aria-label="remove {UNIT_DEFS[d].name}">
-                <span class="tile-sub">{i + 1}</span>
+              <button
+                class="tile unit-tile"
+                class:selected={inspect?.area === 'board' && inspect.index === i}
+                onclick={() => (inspect = { area: 'board', index: i })}
+              >
+                <span class="tile-sub">pos {i + 1}</span>
                 <span class="tile-name">{UNIT_DEFS[d].name}</span>
                 <span class="tile-stats">{UNIT_DEFS[d].attack}⚔/{UNIT_DEFS[d].health}❤</span>
-                <span class="tile-sub">tap to remove</span>
               </button>
             {/each}
           </div>
@@ -295,6 +309,58 @@
         </div>
       {/if}
     </section>
+  {/if}
+
+  {#if inspect}
+    {@const ins = inspect}
+    <div class="sheet-backdrop" role="presentation" onclick={() => (inspect = null)}>
+      <div class="sheet" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+        {#if ins.area === 'roster'}
+          {@const r = ROSTER[ins.index]}
+          {@const def = UNIT_DEFS[r.defId]}
+          {@const afford = cost(r.defId) <= left}
+          {@const full = board.length >= BOARD_CAP}
+          <div class="card-head">
+            <div class="card-icon">{r.role[0]}</div>
+            <div>
+              <div class="card-name">{def.name}</div>
+              <div class="card-stats">{def.attack}/{def.health} <span class="card-tier">atk/hp</span></div>
+              <div class="card-sub role">{r.role}</div>
+            </div>
+          </div>
+          <p class="card-ability">{r.blurb}.</p>
+          <p class="card-hint">costs ⚙ {cost(r.defId)} scrap</p>
+          <div class="card-actions">
+            <button class="primary" disabled={!afford || full} onclick={() => { add(r.defId); inspect = null; }}>
+              + add to board
+            </button>
+            <button onclick={() => (inspect = null)}>close</button>
+          </div>
+          {#if full}<div class="card-warn">the board is full</div>
+          {:else if !afford}<div class="card-warn">not enough scrap</div>{/if}
+        {:else}
+          {@const d = board[ins.index]}
+          {@const def = UNIT_DEFS[d]}
+          <div class="card-head">
+            <div class="card-icon">{ins.index + 1}</div>
+            <div>
+              <div class="card-name">{def.name}</div>
+              <div class="card-stats">{def.attack}/{def.health} <span class="card-tier">atk/hp</span></div>
+              <div class="card-sub">position {ins.index + 1} of {board.length}</div>
+            </div>
+          </div>
+          <p class="card-hint">front → back, left clashes first</p>
+          <div class="card-actions">
+            <button disabled={ins.index === 0} onclick={() => moveBoard(ins.index, -1)}>◀ move up</button>
+            <button disabled={ins.index === board.length - 1} onclick={() => moveBoard(ins.index, 1)}>move down ▶</button>
+          </div>
+          <div class="card-actions">
+            <button onclick={() => { removeAt(ins.index); inspect = null; }}>remove</button>
+            <button onclick={() => (inspect = null)}>close</button>
+          </div>
+        {/if}
+      </div>
+    </div>
   {/if}
 </main>
 
@@ -439,6 +505,141 @@
   }
 
   .tile-cost { font-size: 11px; color: #d4af37; }
+
+  .unit-tile.selected {
+    border-color: var(--accent);
+    background: #2c1e15;
+  }
+
+  .phase-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px auto 14px;
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .phase-divider::before,
+  .phase-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #4a3520;
+  }
+
+  .sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 50;
+  }
+
+  .sheet {
+    width: 100%;
+    max-width: 480px;
+    background: #1a140f;
+    border: 1px solid #4a3520;
+    border-bottom: none;
+    border-radius: 14px 14px 0 0;
+    padding: 18px 18px 26px;
+    text-align: left;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .card-icon {
+    width: 56px;
+    height: 56px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 700;
+    color: #d9a441;
+    background: #241a14;
+    border: 1px solid #4a3520;
+    border-radius: 10px;
+  }
+
+  .card-name { font-size: 19px; color: var(--ink); }
+
+  .card-stats {
+    margin-top: 3px;
+    font-size: 17px;
+    font-weight: bold;
+    color: #f0e6d2;
+  }
+
+  .card-tier {
+    font-size: 11px;
+    font-weight: normal;
+    color: var(--ink-dim);
+    margin-left: 6px;
+  }
+
+  .card-sub {
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+
+  .card-sub.role { color: #d9a441; font-weight: 700; letter-spacing: 1px; }
+
+  .card-ability {
+    margin: 14px 0 4px;
+    font-size: 14px;
+    line-height: 1.45;
+    color: #c9b891;
+  }
+
+  .card-hint {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+
+  .card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .card-actions button {
+    padding: 9px 16px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: #241a14;
+    border: 1px solid #4a3520;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .card-actions button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #f7ede0;
+  }
+
+  .card-actions button:disabled { opacity: 0.4; cursor: default; }
+
+  .card-warn {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #d8452e;
+  }
 
   .lb-empty {
     margin: 4px 0;
