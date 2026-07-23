@@ -19,8 +19,7 @@
  *
  * Run:  npm run round-sim
  */
-import { UNIT_DEFS, type Lineup } from '../src/data/units';
-import { simulateDuel } from '../src/duel';
+import { UNIT_DEFS, type Lineup, scoreRound } from '../src';
 
 const BUDGET = 100;
 
@@ -65,44 +64,16 @@ function main() {
     console.log(`  ${pad(p.name, 22)}${flag}`);
   }
 
-  const n = PLAYERS.length;
-  const wins = new Array(n).fill(0);
-  const losses = new Array(n).fill(0);
-  const draws = new Array(n).fill(0);
-  const margin = new Array(n).fill(0); // survivor differential (tiebreak only)
-
-  // All-vs-all, each pair home AND away. Points: win 3 / draw 1 / loss 0.
-  // Margin (your survivors − theirs) is a separate "goal difference" tiebreak,
-  // so the headline score isn't dominated by a few decisive stomps.
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      for (const [a, b] of [
-        [i, j],
-        [j, i],
-      ] as [number, number][]) {
-        const r = simulateDuel(PLAYERS[a].lineup, PLAYERS[b].lineup).result;
-        const marginA = r.survivorsA.length - r.survivorsB.length;
-        margin[a] += marginA;
-        margin[b] -= marginA;
-        if (r.winner === 'a') {
-          wins[a]++; losses[b]++;
-        } else if (r.winner === 'b') {
-          wins[b]++; losses[a]++;
-        } else {
-          draws[a]++; draws[b]++;
-        }
-      }
-    }
-  }
-
-  const points = (i: number) => wins[i] * 3 + draws[i];
-  const order = [...PLAYERS.keys()].sort((a, b) => points(b) - points(a) || margin[b] - margin[a]);
+  // Scoring (all-vs-all, each pair home AND away; points win 3 / draw 1 / loss
+  // 0, survivor-differential margin as tiebreak) is the SAME `scoreRound` the
+  // live round runner uses (run-round.ts / advance-round.ts) — one
+  // implementation, so this offline prototype can't drift from production.
+  const rows = scoreRound(PLAYERS.map((p) => ({ id: p.name, name: p.name, lineup: p.lineup })));
   console.log('\nRound standings (points: win 3 / draw 1 / loss 0; margin breaks ties):');
   console.log(`  ${pad('#', 3)}${pad('player', 22)}${pad('pts', 5)}${pad('W', 4)}${pad('L', 4)}${pad('D', 4)}${pad('margin', 7)}`);
-  for (let k = 0; k < order.length; k++) {
-    const i = order[k];
+  for (const r of rows) {
     console.log(
-      `  ${pad(String(k + 1), 3)}${pad(PLAYERS[i].name, 22)}${pad(String(points(i)), 5)}${pad(String(wins[i]), 4)}${pad(String(losses[i]), 4)}${pad(String(draws[i]), 4)}${pad((margin[i] >= 0 ? '+' : '') + margin[i], 7)}`
+      `  ${pad(String(r.rank), 3)}${pad(r.name, 22)}${pad(String(r.score), 5)}${pad(String(r.wins), 4)}${pad(String(r.losses), 4)}${pad(String(r.draws), 4)}${pad((r.margin >= 0 ? '+' : '') + r.margin, 7)}`
     );
   }
   console.log('\n  (this lobby is skewed toward WALL; watch where its counter, BRUISER, lands)\n');

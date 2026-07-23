@@ -77,6 +77,21 @@ export {
 } from './shop';
 export { simulateDuel, type DuelResult } from './duel';
 export {
+  PVP_BUDGET,
+  PVP_BOARD_CAP,
+  PVP_ROSTER,
+  pvpUnitCost,
+  validateBoard,
+  legalEntrants,
+  scoreRound,
+  type PvpRole,
+  type PvpRosterEntry,
+  type BoardValidation,
+  type PvpEntrant,
+  type DroppedEntrant,
+  type PvpStanding,
+} from './pvp';
+export {
   simulate,
   simulateCore,
   type BattleMode,

@@ -1,0 +1,51 @@
+name: Rats cron
+
+# Automates the PvP round loop (Milestone A). Every 2 hours: close any round
+# whose closes_at has passed — scoring it via advance-round.ts, which enforces
+# PvP board legality (validateBoard) so a forged submission can't be scored —
+# and make sure exactly one round is open next.
+#
+# This is the automated path; `rats-control.yml` stays as the manual operator
+# override (status/run/reset) and is untouched by this workflow. The
+# concurrency group below only guards against two cron ticks overlapping.
+#
+# Requires the round-lifecycle migration (2026-07-23-add-pvp-rounds.sql) to be
+# applied to the live project first — before that, pvp_rounds doesn't exist
+# and every tick fails loudly (by design: better a visible red X than silently
+# doing nothing).
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: 'Preview only (no writes) — for manual testing'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: rats-cron
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install deps
+        run: npm ci
+
+      - name: Advance round
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run advance-round -w @wrad/core -- ${{ github.event.inputs.dry == 'true' && '--dry' || '' }}
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          echo "### Rats cron — advance-round" >> "$GITHUB_STEP_SUMMARY"
+          echo "Job status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"

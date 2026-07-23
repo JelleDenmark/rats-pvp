@@ -1,52 +1,147 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { simulateDuel, UNIT_DEFS, type Lineup } from '@wrad/core';
+  import {
+    simulateDuel,
+    UNIT_DEFS,
+    type Lineup,
+    PVP_BUDGET,
+    PVP_BOARD_CAP,
+    PVP_ROSTER,
+    pvpUnitCost,
+  } from '@wrad/core';
   import { deviceId, SUPABASE_URL, SUPABASE_ANON_KEY } from '../telemetry';
   import { CHANNEL } from '../env';
   import { ReplayPlayer } from '../replay/ReplayPlayer';
 
-  // ---- roster + budget -----------------------------------------------------
-  const BUDGET = 100;
-  const ROSTER = [
-    { defId: 'plate-rat', role: 'WALL', blurb: 'armor — beats THORN' },
-    { defId: 'bramble-rat', role: 'THORN', blurb: 'reflect — beats BRUISER' },
-    { defId: 'gorge-rat', role: 'BRUISER', blurb: 'lifesteal — beats WALL' },
-    { defId: 'dire-rat-pvp', role: 'WALL', blurb: 'softer armor, more health — beats THORN' },
-    { defId: 'steel-whisker-pvp', role: 'THORN', blurb: 'armor + reflect — beats BRUISER' },
-    { defId: 'grave-leech-pvp', role: 'BRUISER', blurb: 'glass-cannon lifesteal — beats WALL' },
-    { defId: 'press-kin-pvp', role: 'SUPPORT', blurb: 'buffs neighbours +2/+2 — folds to THORN' },
-  ];
-  const BOARD_CAP = 8;
-  const cost = (defId: string) => UNIT_DEFS[defId]?.cost ?? 0;
+  // ---- roster + budget (shared with the server runner via @wrad/core) ------
+  const BUDGET = PVP_BUDGET;
+  const ROSTER = PVP_ROSTER;
+  const BOARD_CAP = PVP_BOARD_CAP;
+  const cost = (defId: string) => pvpUnitCost(defId);
 
-  // ---- round identity ------------------------------------------------------
-  const rawRound = new URLSearchParams(location.search).get('round') ?? 'r1';
-  const roundId = (CHANNEL === 'dev' ? 'dev-' : '') + rawRound;
+  // ---- round identity --------------------------------------------------
+  // An explicit `?round=` always wins (testing / old links). Otherwise the
+  // active round is resolved from the server (`pvp_rounds`, status=open) so
+  // rounds can open/close on a cron with nobody sharing a new URL — see
+  // `resolveRound()` below. `roundReady` gates the rest of the UI until that
+  // resolves (or falls back), so localStorage is never read/written under
+  // the wrong round's namespace.
   const HEADERS = { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
+  let roundReady = $state(false);
+  let rawRound = $state('');
+  let roundId = $state('');
+  let roundClosesAt = $state<string | null>(null);
 
   // ---- persisted local state ----------------------------------------------
-  const NS = `ratspvp:${roundId}`;
-  const loadJSON = <T,>(k: string, fb: T): T => {
+  const NS = $derived(`ratspvp:${roundId}`);
+  function loadJSON<T,>(k: string, fb: T): T {
     try {
       const v = localStorage.getItem(`${NS}:${k}`);
       return v ? (JSON.parse(v) as T) : fb;
     } catch {
       return fb;
     }
-  };
-  const save = (k: string, v: unknown) => localStorage.setItem(`${NS}:${k}`, JSON.stringify(v));
+  }
+  function save(k: string, v: unknown) {
+    localStorage.setItem(`${NS}:${k}`, JSON.stringify(v));
+  }
 
   let view = $state<'build' | 'results'>('build');
-  let name = $state<string>(loadJSON('name', ''));
-  let board = $state<string[]>(loadJSON('board', [])); // ordered defIds, index 0 = front
+  let name = $state<string>('');
+  let board = $state<string[]>([]); // ordered defIds, index 0 = front
   let submitState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  let submitError = $state('');
   let inspect = $state<{ area: 'roster' | 'board'; index: number } | null>(null);
 
   const spent = $derived(board.reduce((s, d) => s + cost(d), 0));
   const left = $derived(BUDGET - spent);
 
-  $effect(() => save('name', name));
-  $effect(() => save('board', board));
+  // Guarded by roundReady so the default '' values never clobber a namespace
+  // before loadPersisted() has actually loaded it (see resolveRound).
+  $effect(() => { if (roundReady) save('name', name); });
+  $effect(() => { if (roundReady) save('board', board); });
+
+  function loadPersisted() {
+    name = loadJSON('name', '');
+    board = loadJSON('board', []);
+    if (!name) name = `Rat-${deviceId().slice(0, 4)}`;
+  }
+
+  interface RoundMeta {
+    round_id: string;
+    opens_at: string;
+    closes_at: string;
+    status: 'open' | 'scoring' | 'closed';
+  }
+
+  async function fetchOpenRound(): Promise<RoundMeta | null> {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/pvp_rounds?status=eq.open&order=opens_at.desc&limit=1` +
+        `&select=round_id,opens_at,closes_at,status`,
+      { headers: HEADERS }
+    );
+    if (!res.ok) return null;
+    const rows = (await res.json()) as RoundMeta[];
+    return rows[0] ?? null;
+  }
+
+  async function fetchRoundMeta(id: string): Promise<RoundMeta | null> {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/pvp_rounds?round_id=eq.${encodeURIComponent(id)}` +
+        `&select=round_id,opens_at,closes_at,status`,
+      { headers: HEADERS }
+    );
+    if (!res.ok) return null;
+    const rows = (await res.json()) as RoundMeta[];
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Resolves which round is active. An explicit `?round=` overrides and just
+   * fetches that round's metadata (for the countdown). Otherwise asks the
+   * server which round is currently open. Any failure (network down, or the
+   * `pvp_rounds` table/migration not applied yet) falls back to the old
+   * default of `r1` with no countdown — the builder must still work offline.
+   */
+  async function resolveRound() {
+    const override = new URLSearchParams(location.search).get('round');
+    try {
+      if (override) {
+        rawRound = override;
+        roundId = (CHANNEL === 'dev' ? 'dev-' : '') + override;
+        roundClosesAt = (await fetchRoundMeta(roundId))?.closes_at ?? null;
+      } else {
+        const open = await fetchOpenRound();
+        if (open) {
+          roundId = open.round_id;
+          rawRound = roundId.replace(/^dev-/, '');
+          roundClosesAt = open.closes_at;
+        } else {
+          rawRound = 'r1';
+          roundId = (CHANNEL === 'dev' ? 'dev-' : '') + rawRound;
+          roundClosesAt = null;
+        }
+      }
+    } catch {
+      rawRound = override ?? 'r1';
+      roundId = (CHANNEL === 'dev' ? 'dev-' : '') + rawRound;
+      roundClosesAt = null;
+    }
+    roundReady = true;
+    loadPersisted();
+  }
+
+  // ---- round countdown ------------------------------------------------------
+  let now = $state(Date.now());
+  const roundTimeLabel = $derived.by(() => {
+    if (!roundClosesAt) return null;
+    const diff = new Date(roundClosesAt).getTime() - now;
+    if (diff <= 0) return 'Round closed — check Standings for results.';
+    const mins = Math.floor(diff / 60_000);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `Round closes in ${h > 0 ? `${h}h ` : ''}${m}m`;
+  });
 
   function add(defId: string) {
     if (board.length >= BOARD_CAP) return;
@@ -72,6 +167,7 @@
   async function submit() {
     if (board.length === 0) return;
     submitState = 'saving';
+    submitError = '';
     const lineup: Lineup = { units: board.map((defId) => ({ defId, tier: 1, relicIds: [] })) };
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/submit_pvp_board`, {
@@ -84,9 +180,18 @@
           p_lineup: lineup,
         }),
       });
-      submitState = res.ok ? 'saved' : 'error';
+      if (res.ok) {
+        submitState = 'saved';
+      } else {
+        submitState = 'error';
+        const body = await res.json().catch(() => null);
+        submitError = /not open/i.test(body?.message ?? '')
+          ? 'This round has closed — check Standings.'
+          : 'Submit failed — is the round backend live?';
+      }
     } catch {
       submitState = 'error';
+      submitError = 'Submit failed — is the round backend live?';
     }
   }
 
@@ -184,7 +289,9 @@
   }
 
   onMount(() => {
-    if (!name) name = `Rat-${deviceId().slice(0, 4)}`;
+    resolveRound();
+    const t = setInterval(() => { now = Date.now(); }, 30_000);
+    return () => clearInterval(t);
   });
 
   async function goResults() {
@@ -195,7 +302,11 @@
 
 <main>
   <h1>RATS PVP</h1>
+  {#if !roundReady}
+    <p class="sub">loading round…</p>
+  {:else}
   <p class="sub">round {rawRound} · counters WALL ▸ THORN ▸ BRUISER ▸ WALL</p>
+  {#if roundTimeLabel}<p class="hint round-timer">{roundTimeLabel}</p>{/if}
 
   <div class="compendium-nav">
     <button class:active={view === 'build'} onclick={() => (view = 'build')}>Build</button>
@@ -265,7 +376,7 @@
         {submitState === 'saving' ? 'Submitting…' : 'Submit board'}
       </button>
       {#if submitState === 'saved'}<p class="ok">Submitted for round {rawRound}. Check Standings after it runs.</p>{/if}
-      {#if submitState === 'error'}<p class="err">Submit failed — is the round backend live?</p>{/if}
+      {#if submitState === 'error'}<p class="err">{submitError}</p>{/if}
     </section>
   {:else}
     <section class="results">
@@ -313,6 +424,7 @@
         </div>
       {/if}
     </section>
+  {/if}
   {/if}
 
   {#if inspect}
@@ -417,6 +529,8 @@
   .build { max-width: 620px; margin: 0 auto 16px; text-align: left; }
 
   .hint { color: var(--ink-dim); line-height: 1.4; font-size: 13px; margin: 0 0 12px; }
+
+  .round-timer { text-align: center; margin: -8px 0 16px; font-size: 12px; color: #d9a441; }
 
   .status-row {
     display: flex;

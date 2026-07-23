@@ -28,6 +28,7 @@
     "round-sim": "tsx scripts/round-sim.ts",
     "run-round": "tsx scripts/run-round.ts",
     "reset-round": "tsx scripts/reset-round.ts",
+    "advance-round": "tsx scripts/advance-round.ts",
     "balance:t2-percentiles": "tsx scripts/t2-percentiles.ts"
   },
   "devDependencies": {

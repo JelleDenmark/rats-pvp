@@ -2,8 +2,11 @@
  * reset-round — wipe a PvP round so it can be replayed from scratch.
  *
  * DELETEs every row for the given round from BOTH `pvp_results` (standings) and
- * `pvp_boards` (submitted boards). After this, the round id is empty again:
- * players can resubmit and you can re-close it with run-round.
+ * `pvp_boards` (submitted boards), then re-opens the round in `pvp_rounds`
+ * (status back to 'open', a fresh closes_at DEFAULT_ROUND_HOURS from now).
+ * That reopen step matters as of the round-lifecycle migration
+ * (2026-07-23-add-pvp-rounds.sql): without it the round would stay marked
+ * 'closed' and `submit_pvp_board` would reject every resubmission.
  *
  * This is DESTRUCTIVE and irreversible. Writing/deleting needs the Supabase
  * SERVICE-ROLE key (it bypasses RLS) — same key run-round uses. Set it in a
@@ -16,11 +19,8 @@
  * Run:  npm run reset-round -- <round_id> --confirm <round_id>
  *       e.g. npm run reset-round -- r1 --confirm r1
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-// Public, publishable anon creds — same as run-round.ts / telemetry.ts.
-const SUPABASE_URL = 'https://wvrllhiktnkvbpclmrpq.supabase.co';
+import { serviceKey } from './lib/service-key';
+import { SUPABASE_URL, DEFAULT_ROUND_HOURS } from './lib/pvp-round';
 
 const ROUND = process.argv[2];
 // Confirmation can be given as `--confirm <round>` (survives the `-w` form) or
@@ -45,21 +45,6 @@ if (CONFIRM !== ROUND) {
   process.exit(1);
 }
 
-/** Minimal .env loader (tsx does not auto-load one). Repo-root .env, KEY=VALUE. */
-function serviceKey(): string | undefined {
-  if (process.env.SUPABASE_SERVICE_ROLE_KEY) return process.env.SUPABASE_SERVICE_ROLE_KEY;
-  for (const p of ['.env', '../.env', '../../.env']) {
-    try {
-      const txt = readFileSync(join(process.cwd(), p), 'utf8');
-      const m = txt.match(/^\s*SUPABASE_SERVICE_ROLE_KEY\s*=\s*(.+)\s*$/m);
-      if (m) return m[1].trim().replace(/^['"]|['"]$/g, '');
-    } catch {
-      /* no file here — try the next */
-    }
-  }
-  return undefined;
-}
-
 /** DELETE every row in `table` for this round; returns how many were removed. */
 async function wipe(table: string, key: string): Promise<number> {
   const url = `${SUPABASE_URL}/rest/v1/${table}?round_id=eq.${encodeURIComponent(ROUND)}`;
@@ -77,6 +62,26 @@ async function wipe(table: string, key: string): Promise<number> {
   return Array.isArray(rows) ? rows.length : 0;
 }
 
+/** Upsert the round back to 'open' with a fresh close time. */
+async function reopenRound(key: string): Promise<string> {
+  const opensAt = new Date();
+  const closesAt = new Date(opensAt.getTime() + DEFAULT_ROUND_HOURS * 60 * 60 * 1000);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/pvp_rounds?on_conflict=round_id`, {
+    method: 'POST',
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify([
+      { round_id: ROUND, opens_at: opensAt.toISOString(), closes_at: closesAt.toISOString(), status: 'open' },
+    ]),
+  });
+  if (!res.ok) throw new Error(`pvp_rounds reopen failed: ${res.status} ${await res.text()}`);
+  return closesAt.toISOString();
+}
+
 async function main() {
   const key = serviceKey();
   if (!key) {
@@ -91,9 +96,10 @@ async function main() {
   // Results first (nothing depends on them), then boards.
   const results = await wipe('pvp_results', key);
   const boards = await wipe('pvp_boards', key);
+  const closesAt = await reopenRound(key);
   console.log(
     `Done. Removed ${results} standings row(s) and ${boards} board(s) for round "${ROUND}".\n` +
-      'The round is now empty — players can resubmit.\n'
+      `Round is OPEN again — closes ${closesAt}. Players can resubmit.\n`
   );
 }
 

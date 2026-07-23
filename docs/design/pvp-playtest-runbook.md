@@ -1,73 +1,104 @@
-# PvP first playtest — runbook
+# PvP playtest — runbook
 
-The lean manual round. **Live and deployed**: https://github.com/JelleDenmark/rats-pvp
+**Live and deployed**: https://github.com/JelleDenmark/rats-pvp
 → https://jelledenmark.github.io/rats-pvp/?mode=pvp (public repo, `master` branch,
 single-branch GitHub Pages deploy — no `dev` channel in this fork, so round ids
-are **unprefixed**). 341 tests green; the migration is applied to the live
-Supabase project and the full submit → run-round → standings loop has been
-verified end-to-end against the deployed page.
+are **unprefixed**).
 
-## One-time setup (done)
+As of Milestone A (2026-07-23), the round loop is **automated and board-legality
+is server-enforced** — see "Milestone A" in `pvp-notes.md` for the design
+rationale. The manual control panel (`rats-control.yml`) still works as an
+operator override.
 
-1. ~~Apply the migration~~ — `supabase/migrations/2026-07-22-add-pvp.sql` is
-   applied to the live project (`wvrllhiktnkvbpclmrpq`): `pvp_boards`,
-   `pvp_results`, `submit_pvp_board` RPC, RLS all live. Re-running it is safe
-   (idempotent `if not exists` / `create or replace`) if you ever need to.
+## One-time setup
 
-2. ~~Local `.env`~~ — `./.env` (repo root, gitignored) already has
-   `SUPABASE_SERVICE_ROLE_KEY` set, so `run-round` writes real results (not
-   dry-run).
+1. ~~Apply the boards/results migration~~ — `supabase/migrations/2026-07-22-add-pvp.sql`
+   is applied to the live project (`wvrllhiktnkvbpclmrpq`): `pvp_boards`,
+   `pvp_results`, `submit_pvp_board` RPC, RLS all live.
 
-3. ~~Deploy~~ — pushed to `master`, GitHub Pages is live (single-branch workflow,
-   `.github/workflows/deploy.yml`). Future pushes to `master` redeploy
+2. **Apply the round-lifecycle migration** (new, not yet applied) —
+   `supabase/migrations/2026-07-23-add-pvp-rounds.sql` adds `pvp_rounds` and
+   the closed-round guard in `submit_pvp_board`. Apply by hand (SQL editor or
+   CLI) against `wvrllhiktnkvbpclmrpq`, same as every prior migration in this
+   repo. **Until this is applied, `advance-round.ts`/the cron fail loudly**
+   (the table doesn't exist) and the client falls back to its old default of
+   round `r1` with no countdown — safe, but not the new behavior.
+
+3. **Seed the first round** (new, one-time, right after applying #2) — nothing
+   is open until you do this; every submission is rejected otherwise:
+
+   ```bash
+   npm run advance-round -- --dry     # preview: should say "opening round r1"
+   npm run advance-round --           # for real
+   ```
+
+4. **Set the `SUPABASE_SERVICE_ROLE_KEY` repo secret** (done) — Settings →
+   Secrets and variables → Actions. Used by both `rats-control.yml` (manual)
+   and the new `rats-cron.yml` (automatic). Also present in the local `.env`
+   (repo root, gitignored) for terminal use.
+
+5. ~~Deploy~~ — pushed to `master`, GitHub Pages is live
+   (`.github/workflows/deploy.yml`). Future pushes to `master` redeploy
    automatically.
 
-## Each round
+## How a round works now (automated)
 
-1. **Open the round.** Share the URL — round id is unprefixed:
+1. **Round opens automatically.** `.github/workflows/rats-cron.yml` runs
+   `npm run advance-round -w @wrad/core` every 2 hours. Players just visit:
 
    ```
-   https://jelledenmark.github.io/rats-pvp/?mode=pvp          (round r1, the default)
-   https://jelledenmark.github.io/rats-pvp/?mode=pvp&round=r2  (later rounds)
+   https://jelledenmark.github.io/rats-pvp/?mode=pvp
    ```
 
-   Players spend 100 scrap, build a board, hit **Submit**.
+   The client asks the server which round is currently open (`pvp_rounds`,
+   `status=open`) and shows a **"Round closes in Xh Ym"** countdown. An
+   explicit `?round=r2` link still works as an override (testing / old links).
 
-2. **Close the round.** Once submissions are in, run the all-vs-all and write
-   standings. Two ways:
+2. **Players build and submit.** Same as before: spend 100 scrap, build a
+   board, hit **Submit**. The RPC now rejects a submission once the round has
+   closed (`"This round has closed — check Standings."`).
 
-   - **Phone / browser (no terminal)** — GitHub → **Actions** tab → **Rats
-     control** → **Run workflow**. Pick `action: run`, `round: r1`, tap the
-     green button. Works from the GitHub mobile app too. `action: status` first
-     is a safe preview (writes nothing); `action: reset` wipes a round (retype
-     the round id in `confirm_round` to arm it). See `.github/workflows/rats-control.yml`.
-   - **Terminal** — still available:
+3. **Round closes automatically.** When `closes_at` passes, the next cron
+   tick: fetches every submitted board, **drops any that fail PvP legality**
+   (`validateBoard` — wrong budget, non-PvP unit, tier > 1, relics; logged in
+   the workflow's step summary), runs the all-vs-all round-robin on the rest,
+   writes `pvp_results`, marks the round `closed`, and opens the next one.
 
-     ```bash
-     npm run run-round -- r1
-     ```
+4. **Players see results.** Same **Standings** tab as before — ranked board,
+   own matchups, replayable in the Pixi stage (client re-simulates locally,
+   deterministic, so it matches the server).
 
-   The control workflow needs the `SUPABASE_SERVICE_ROLE_KEY` **repo secret**
-   set once (Settings → Secrets and variables → Actions) — same value as the
-   local `.env`. Without it, `run`/`reset` fall back to a harmless dry-run.
+## Manual override (still available)
 
-3. **Players see results.** They revisit the same URL → **Standings** tab shows
-   the ranked board and their own matchups, each replayable in the Pixi stage
-   (the client re-simulates each duel locally — deterministic, so it matches).
+Everything from the original manual flow still works, now on top of the round
+lifecycle:
 
-4. **Next round.** Share `?round=r2`, players rebuild, then
-   `npm run run-round -- r2`. Watching the **meta rotate** across rounds (does
-   the counter to last round's popular archetype win?) is the main thing this
-   test is for.
+- **Phone / browser (no terminal)** — GitHub → **Actions** tab → **Rats
+  control** → **Run workflow**. `action: status` previews (writes nothing);
+  `action: run` closes the round NOW regardless of its scheduled close time
+  (drops illegal boards, writes standings, marks it `closed`); `action: reset`
+  wipes a round's boards/results **and re-opens it** (retype the round id in
+  `confirm_round` to arm it).
+- **Terminal**:
+  ```bash
+  npm run run-round -- r1          # close round r1 now
+  npm run reset-round -- r1 --confirm r1   # wipe + reopen r1
+  npm run advance-round -- --dry    # preview what the cron would do next
+  ```
 
 ## What to watch for in the test
 - Is building a board + anticipating the field **fun**?
 - Is the WALL▸THORN▸BRUISER counter triangle **legible** to players?
-- Is the scoring right? It's football points (win 3 / draw 1 / loss 0) with
-  survivor differential as the tiebreak — deliberately not too swingy. Easy to
-  retune in `run-round.ts` (e.g. reward margin more, or less).
+- Is the scoring right? Football points (win 3 / draw 1 / loss 0) with
+  survivor differential as the tiebreak — tune via `scoreRound` in
+  `packages/core/src/pvp.ts` (the single implementation the live runner, the
+  cron, and `round-sim.ts` all share).
+- Is 2 hours the right round length now that it's unattended? `advance-round
+  -- --hours <n>` controls the NEXT round's length.
 
 ## Not in this version (deferred — see pvp-notes.md)
-Automated 2-hour rounds (GitHub Actions cron → an edge-function runner mirroring
-`verify-scores`), anti-cheat re-simulation, and richer builder features. All have
-existing templates in the repo to copy when you want them.
+Server-side anti-cheat is now board-legality only (a forged board can't be
+scored) — full outcome re-simulation was already implicit (the runner computes
+every duel itself from the submitted boards). Richer combat (positional
+targeting, multi-wave duels), seasons/rotating meta, and ranks/cosmetics are
+Milestones B–D in the long-term plan, not started yet.

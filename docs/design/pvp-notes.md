@@ -16,8 +16,34 @@ player. See `packages/core/src/duel.ts` (`simulateDuel`).
   is a separate "goal difference" **tiebreak**, so the standings reward winning
   without a few decisive stomps running away with the round. (Started as a raw
   +1/−1 survivor margin; softened to points after the round-sim showed it was
-  too swingy — trivially tunable in `run-round.ts`.)
+  too swingy — trivially tunable via `scoreRound` in `packages/core/src/pvp.ts`.)
 - Prototype simulator: `npm run round-sim`.
+
+## Milestone A — automated rounds + board legality (2026-07-23)
+
+Rounds now run themselves and a forged board can't be scored:
+
+- **Round lifecycle.** `pvp_rounds` (`supabase/migrations/2026-07-23-add-pvp-rounds.sql`)
+  tracks `opens_at`/`closes_at`/`status` (`open` → `scoring` → `closed`) per
+  round id. `submit_pvp_board` now rejects a submission unless the round is
+  `open` and `closes_at` hasn't passed — a server-authoritative cutoff, not the
+  client's clock.
+- **Board legality.** `validateBoard`/`legalEntrants` in `packages/core/src/pvp.ts`
+  is the single source of truth for "is this a legal PvP board" (right budget,
+  right cap, only `pvpOnly` units, tier 1, no relics) — used by BOTH the client
+  builder (friendly pre-submit feedback) and the round runner (authoritative:
+  illegal boards are dropped from the round-robin entirely, so a raw POST to
+  the RPC forging a tier-99 or over-budget board simply can't be scored).
+- **Automation.** `packages/core/scripts/advance-round.ts` closes any round
+  past `closes_at` (scoring + writing `pvp_results` via the shared
+  `scoreRound`) and opens the next one, run on a schedule by
+  `.github/workflows/rats-cron.yml` (every 2h). `run-round.ts`/`reset-round.ts`
+  and the `rats-control.yml` phone panel remain as the manual operator
+  override — same underlying `runAndWriteRound` logic.
+- **One shared scorer.** `scoreRound` (core) is now the only implementation of
+  the round-robin + football-points scoring; the live runner, the cron
+  entry point, and the offline `round-sim.ts` prototype all call it, so they
+  can't drift apart.
 
 ## Combat model
 
