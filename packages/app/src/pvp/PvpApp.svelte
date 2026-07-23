@@ -14,7 +14,7 @@
     { defId: 'dire-rat-pvp', role: 'WALL', blurb: 'softer armor, more health — beats THORN' },
     { defId: 'steel-whisker-pvp', role: 'THORN', blurb: 'armor + reflect — beats BRUISER' },
     { defId: 'grave-leech-pvp', role: 'BRUISER', blurb: 'glass-cannon lifesteal — beats WALL' },
-    { defId: 'press-kin-pvp', role: 'BEEF', blurb: 'buffs neighbours +2/+2 — folds to THORN' },
+    { defId: 'press-kin-pvp', role: 'SUPPORT', blurb: 'buffs neighbours +2/+2 — folds to THORN' },
   ];
   const BOARD_CAP = 8;
   const cost = (defId: string) => UNIT_DEFS[defId]?.cost ?? 0;
