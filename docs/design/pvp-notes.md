@@ -45,6 +45,55 @@ Rounds now run themselves and a forged board can't be scored:
   entry point, and the offline `round-sim.ts` prototype all call it, so they
   can't drift apart.
 
+## Milestone B2 — two-row parallel lanes, opt-in (2026-07-23)
+
+Positional combat, revised from the original "HS-BG random targeting vs two
+rows" sketch after closer engine research found: combat has zero RNG anywhere
+(`xorshift128` is pre-battle content generation only), and there's a proven
+bug class for exactly the risk random targeting would add — `cleaveOverkill`'s
+overkill spillover resolved side-A-first with no mirrored check, so a mirror
+match with it on both sides didn't draw (found live, unpatched, during this
+research — fixed as part of this work). Two-row lanes sidesteps that risk
+entirely: no RNG, no Taunt/Stealth, fully deterministic.
+
+- **Design.** Front `ceil(n/2)` units of the submitted board = lane 1, rest =
+  lane 2 (purely positional, no schema/UI change). Both lanes clash
+  simultaneously each tick instead of one clash per tick. Opt-in via
+  `{ twoLane: true }` on `simulateDuel`/`BattleMode`'s `duel` variant, default
+  off — every existing call site and the live round format are unaffected
+  until an explicit later decision flips it.
+- **A real bug fixed along the way.** `cleaveOverkill`'s spillover now checks
+  both directions (previously only the horde's front unit was ever
+  consulted). Provably inert for all real content today — no shipped unit or
+  enemy sets `cleaveOverkill`, enemies never carry relics, PvP boards can't
+  carry relics at all — so this only matters the day a future unit equips it
+  on both sides of a match.
+- **A new edge case: cross-lane "stranding."** If lane 1 decides one way and
+  lane 2 decides the other, both sides can end up with an unopposed survivor
+  and no shared lane left — resolved by the health/attack tiebreak instead of
+  a real fight (lanes deliberately never "reach across"). Measured via
+  `npm run win-matrix -- --two-lane`:
+  - **Mono-stack boards** (the existing WALL/THORN/BRUISER/PRESS fixtures):
+    **0% stranding** — a mono-stack's two lanes are identical units, so they
+    always decide the same way. The counter-triangle matrix (cycles, standings,
+    0 seat-splits) comes out byte-identical to single-lane for these boards.
+  - **Mixed-composition boards** (half one role, half another — closer to a
+    real player's build): **33% of duels (10/30)** resolved via the tiebreak
+    rather than a wipe. Non-transitivity and seat-fairness still held (0
+    splits, 6 counter cycles found), but a third of mixed matchups not
+    resolving as a real fight is a real gameplay-feel concern for the live
+    format, not just a correctness footnote.
+- **Not live.** The round-robin (`scoreRound`, `run-round.ts`/`advance-round.ts`)
+  and the client's replay re-simulation all still call `simulateDuel` with no
+  options — untouched, byte-identical. Flipping the live format to two-lane
+  (deciding what to do about stranding, if anything) is an explicit, separate
+  decision, not bundled into shipping the capability.
+- Tests: `packages/core/test/two-lane.test.ts` (mirror-fairness across even/odd
+  board sizes, lane-assignment/clash-pairing, no-reach-across, the stranding
+  edge case, the symmetric-cleave fix, determinism, default-off equivalence).
+- Analysis: `npm run win-matrix -- --two-lane` (mono-stack matrix + a
+  supplementary mixed-composition pass).
+
 ## Combat model
 
 - A duel is **one symmetric wave**: board A vs board B, same engine as PvE
@@ -181,22 +230,24 @@ axis once the base roster is a stable RPS.
 
 ## Deferred ideas — NOT for now, noted for later
 
-### Richer positional combat
-The single-front-clash model is thin. Two candidates:
-- **Two rows** — front/back rows; attacks hit the first or second row.
-- **Hearthstone-Battlegrounds targeting** — fixed attack order, random target,
-  overruled by **Taunt** (must be hit first) and **Stealth** (untargetable until
-  revealed).
+### Richer positional combat — status: capability shipped, not live (see Milestone B2 above)
+Two-row parallel lanes is built and opt-in (`{ twoLane: true }`); the live
+round format still hasn't been flipped over pending a decision on the
+cross-lane stranding tradeoff. HS-BG-style random targeting (fixed attack
+order, random target, Taunt/Stealth) was reconsidered and NOT pursued — combat
+has never consumed an RNG stream, and the proven `cleaveOverkill`
+side-A-first bug (see Milestone B2) is exactly the risk class random
+targeting would add on top of. Not ruled out forever, just a materially
+higher-risk lift than two-row lanes turned out to be.
 
-Either changes the targeting core in `sim.ts`, so post-v1. Gotcha: random
-targeting needs a **seeded per-duel RNG** (hash both device ids + round) so
-client/server still reproduce byte-identical results for anti-cheat — the engine
-already ships a seeded xorshift128 (`prng.ts`).
-
-### Multi-wave / multi-round duels
-Would revive the summon-swarm and poison archetypes (their engines assume
-repeated waves) and further smooth any seat variance. "Best-of-N with board
-refresh" is the natural candidate.
+### Multi-wave / multi-round duels — status: shelved, not pursued
+The engine is 100% deterministic — repeating the same `simulateDuel(a,b)`
+call N times with unchanged boards produces byte-identical results every
+time, so a naive "best-of-N" is a no-op, not a real format. Making it
+meaningful would need either an undesigned "comeback after a wipe" rule or
+introducing net-new RNG into combat. Revisit only if a concrete,
+well-specified format shows up — "their engines assume repeated waves" turned
+out to need more design than a one-line note could resolve.
 
 ### Tribe / type-advantage layer
 The `tribe` field is dormant and could later become a Pokémon-style multiplier;

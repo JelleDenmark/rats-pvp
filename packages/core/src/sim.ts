@@ -142,6 +142,18 @@ interface BattleUnit {
    */
   chargeStacks: number;
   /**
+   * Rats PvP fork (Milestone B2, two-row parallel lanes). Which half of the
+   * ORIGINAL submitted board this instance started in — front `ceil(n/2)` =
+   * lane 1, rest = lane 2. Fixed once at instantiate() time via `laneOf()`
+   * and never recomputed, so it survives resolveDeaths()'s splices (the same
+   * trick that lets index 0 "auto-advance" to the next survivor today).
+   * Consulted only when `BattleMode.duel.twoLane` is set; harmless dead
+   * weight otherwise (same idiom as chargeStacks/waveBuffPhase — every unit
+   * gets a value, only some modes read it). Enemies in `gauntlet` mode get a
+   * lane too for uniformity, though PvE never sets `twoLane` so it's inert.
+   */
+  lane: 1 | 2;
+  /**
    * Twilight-Runt's `teamBuffByWave` (2026-07-16 rework of issue #110).
    * Tracks how far this instance has progressed through its two fire-once
    * team grants — 'none' (neither fired yet), 'early' (only the early-wave
@@ -192,7 +204,18 @@ export function simulate(
  */
 export type BattleMode =
   | { kind: 'gauntlet'; gauntlet: Gauntlet }
-  | { kind: 'duel'; opponent: Lineup };
+  | {
+      kind: 'duel';
+      opponent: Lineup;
+      /**
+       * Rats PvP fork (Milestone B2). Opt-in, default off (undefined ===
+       * false): resolve both boards' front and back lanes simultaneously
+       * each tick instead of one clash per tick. Never set by `gauntlet`
+       * mode — PvE is untouched by construction. See `resolveClash`/the
+       * per-tick lane loop and `BattleUnit.lane`.
+       */
+      twoLane?: boolean;
+    };
 
 export interface CoreOutput {
   events: BattleEvent[];
@@ -257,7 +280,8 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
     relicIds: string[] = [],
     tier = 1,
     attackScale = 1,
-    healthScale = 1
+    healthScale = 1,
+    lane: 1 | 2 = 1
   ): BattleUnit => {
     const relics = relicIds
       .map((id) => RELIC_DEFS[id])
@@ -291,8 +315,14 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
       raised: false,
       chargeStacks: 0,
       waveBuffPhase: 'none',
+      lane,
     };
   };
+
+  /** Rats PvP fork (Milestone B2): front `ceil(total/2)` slots = lane 1, rest
+   * = lane 2, purely by position in the original submitted order. */
+  const laneOf = (index: number, total: number): 1 | 2 =>
+    index < Math.ceil(total / 2) ? 1 : 2;
 
   const view = (u: BattleUnit): UnitView => ({
     instanceId: u.instanceId,
@@ -304,9 +334,10 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
     side: u.side,
   });
 
-  const horde: BattleUnit[] = lineup.units
-    .slice(0, BOARD_CAP)
-    .map((u) => instantiate(UNIT_DEFS[u.defId], 'horde', u.relicIds, u.tier ?? 1));
+  const hordeUnits = lineup.units.slice(0, BOARD_CAP);
+  const horde: BattleUnit[] = hordeUnits.map((u, i) =>
+    instantiate(UNIT_DEFS[u.defId], 'horde', u.relicIds, u.tier ?? 1, 1, 1, laneOf(i, hordeUnits.length))
+  );
   let enemies: BattleUnit[] = [];
   const fallen: Record<Side, BattleUnit[]> = { horde: [], gauntlet: [] };
 
@@ -434,11 +465,13 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
    * callers can stop their litter loop. `owner` tags the body's `summonedBy`
    * for `maintainSummons` accounting (Rat-Piper); omit it for one-shot summons
    * (Brood-Mother's cascade). Fires `allySummoned` (Squeak-Sensei) per body.
+   * `lane` (Milestone B2) inherits the summoning source's lane, defaulting to
+   * 1 — every shipped summon effect is called with the source's own lane.
    */
-  const spawn = (def: UnitDef, index: number, side: Side, owner?: number): boolean => {
+  const spawn = (def: UnitDef, index: number, side: Side, owner?: number, lane: 1 | 2 = 1): boolean => {
     const board = boardOf(side);
     if (board.length >= combatCap) return false;
-    const summoned = instantiate(def, side);
+    const summoned = instantiate(def, side, [], 1, 1, 1, lane);
     summoned.summonedBy = owner;
     board.splice(index, 0, summoned);
     events.push({ type: 'summon', side, index, unit: view(summoned) });
@@ -462,7 +495,7 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
       case 'summon': {
         const def = DEF_LOOKUP[effect.unitId];
         for (let i = 0; i < effect.count * tier; i++) {
-          if (!spawn(def, index, source.side)) break;
+          if (!spawn(def, index, source.side, undefined, source.lane)) break;
         }
         break;
       }
@@ -479,7 +512,7 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
           (u) => u.summonedBy === source.instanceId && u.health > 0
         ).length;
         for (let i = 0; i < target - living; i++) {
-          if (!spawn(def, index, source.side, source.instanceId)) break;
+          if (!spawn(def, index, source.side, source.instanceId, source.lane)) break;
         }
         break;
       }
@@ -1058,6 +1091,146 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
     gauntlet: { attack: 0, health: 0 },
   };
 
+  /** Rats PvP fork (Milestone B2): resolve both lanes per tick instead of one
+   * clash. Never true outside `duel` mode — PvE is untouched by construction. */
+  const isTwoLane = mode.kind === 'duel' && mode.twoLane === true;
+
+  /**
+   * Resolve one clash exchange between `front` (horde-side combatant) and
+   * `foe` (gauntlet-side combatant): simultaneous damage, Ward-Weaver block
+   * charges, Marrow-Snap execute, Gore-Cleaver cleave-overkill, afterAttack
+   * triggers, onHurt reflect. Extracted (Milestone B2) so the single-lane
+   * path and the two-lane path share one implementation rather than two
+   * copies of this ordering-sensitive cascade drifting apart.
+   */
+  const resolveClash = (front: BattleUnit, foe: BattleUnit): void => {
+    events.push({ type: 'clash', hordeId: front.instanceId, enemyId: foe.instanceId });
+
+    const bonusOf = (u: BattleUnit): number =>
+      u.firstAttackDone ? 0 : u.relics.reduce((s, r) => s + (r.firstHitBonusScalesWithWave ? currentWave : (r.firstHitBonus ?? 0)), 0);
+    const damageOut = front.attack + bonusOf(front);
+    const damageIn = foe.attack + bonusOf(foe);
+    front.firstAttackDone = true;
+    foe.firstAttackDone = true;
+
+    // Ward-Weaver's block charges (issue #56) absorb a whole attack hit
+    // outright, so this must resolve before applyDamage even runs — that
+    // also means it resolves before Tail-Charm's lethal-hit check inside
+    // applyDamage, which is the intended order: a fully-blocked hit was
+    // never lethal to begin with, so it should never consume Tail-Charm.
+    // `blockCharges` is a per-wave pool keyed by side (see its declaration
+    // above), not a per-unit flag — it follows whichever unit is
+    // currently front on that side, draining by 1 per hit that would
+    // otherwise land, until the wave's pool (set at `startOfWave`, sized
+    // by `Math.max` across that side's Ward-Weavers) is exhausted.
+    // Captured for Marrow-Snap's crossing check below: the execute must
+    // compare against the foe's health as it stood BEFORE this clash hit.
+    const foeHealthBeforeClash = foe.health;
+    // Whether each side's clash blow actually LANDED this tick — a
+    // Ward-Weaver-absorbed hit never touched the body, so it must not
+    // fire `onHurt` (issue #134) below.
+    let foeTookBlow = false;
+    let frontTookBlow = false;
+    if (blockCharges[foe.side] > 0) {
+      blockCharges[foe.side]--;
+      events.push({ type: 'shieldAbsorbed', targetId: foe.instanceId });
+    } else {
+      applyDamage(foe, damageOut, 'attack');
+      foeTookBlow = true;
+    }
+    if (blockCharges[front.side] > 0) {
+      blockCharges[front.side]--;
+      events.push({ type: 'shieldAbsorbed', targetId: front.instanceId });
+    } else {
+      applyDamage(front, damageIn, 'attack');
+      frontTookBlow = true;
+    }
+    damageThisWave += damageOut;
+
+    // Marrow-Snap: if THIS clash hit drove the foe from above the execute
+    // line to at or below it (executeThreshold of the foe's OWN max
+    // health), the foe dies outright instead of surviving on a sliver.
+    // CROSSING semantics, not a stateless health check (changed for the
+    // season launch, Jesper 2026-07-11): the old "any foe currently at or
+    // below the line dies to the next clash" let Blight-Witch's wave-start
+    // AoE poison pre-soften the whole wave under the line, turning every
+    // front tap into a kill — with a Marrow-Snap rotating on the front
+    // rat, enemies effectively fought with a third of their health bar.
+    // Now the executing blow itself must do the threshold-crossing work;
+    // a foe already under the line (poison chip, earlier clashes) can NOT
+    // be tap-executed — poison steals the crossing rather than enabling
+    // it. Still pure execute, no stat gain anywhere, foe-relative, so the
+    // compounding law holds exactly as before (see `executeThreshold` in
+    // data/relics.ts). Only fires if the foe actually survived this clash
+    // (a kill is a kill, not an execute) and skips a foe a surviveLethal
+    // relic just rescued to 1 health.
+    const executeRelic = front.relics.find((r) => r.executeThreshold !== undefined);
+    // Threshold from the unit's own innate trait (PvP) OR an equipped relic.
+    const executeThreshold = front.executeThreshold ?? executeRelic?.executeThreshold;
+    const executeCutoff = executeThreshold !== undefined ? foe.maxHealth * executeThreshold : 0;
+    if (executeThreshold !== undefined && foe.health > 0 && foeHealthBeforeClash > executeCutoff && foe.health <= executeCutoff) {
+      events.push({ type: 'relicProc', targetId: front.instanceId, relicId: executeRelic?.id ?? front.defId, name: executeRelic?.name ?? front.name });
+      // Finish the foe directly rather than routing through applyDamage:
+      // this is a kill-condition check, not a fresh attack, so it must not
+      // be blunted by the foe's own armor (damageReduction) the way a
+      // normal hit would be.
+      const finishing = foe.health;
+      foe.health = 0;
+      events.push({ type: 'damage', targetId: foe.instanceId, amount: finishing, remainingHealth: 0 });
+    }
+
+    // Gore-Cleaver: overkill damage that actually fells a clash's loser
+    // carries to the next survivor, once, no chaining. Fixed (Milestone B2)
+    // to check BOTH directions — previously only front's cleaveOverkill was
+    // ever consulted, so a mirror match with cleaveOverkill on both sides
+    // didn't draw (side A's cleave always "went first", a proven
+    // mirror-fairness violation of exactly the class the mirror test
+    // exists to catch). No shipped unit or enemy def sets cleaveOverkill,
+    // enemies never carry relics, and PvP boards can't carry relics at all
+    // (validateBoard rejects them) — so this fix is provably inert for
+    // every existing golden log and duel today; it only matters the day a
+    // future unit equips it on both sides of a match. In single-lane mode
+    // the spillover target is literally "the next array slot" (today's
+    // exact behavior, lane-blind); in two-lane mode it's the next
+    // SURVIVING unit in the same lane (array position no longer reliably
+    // maps to lane after splicing).
+    const cleaveSpillover = (attacker: BattleUnit, defender: BattleUnit, defenderBoard: BattleUnit[]): void => {
+      if (!(attacker.cleaveOverkill || attacker.relics.some((r) => r.cleaveOverkill))) return;
+      if (defender.health > 0) return;
+      // Carry what actually spilled past the kill, i.e. how far the
+      // defender's health went negative — not the raw swing, which armor
+      // may have blunted before it landed.
+      const overkill = -defender.health;
+      if (overkill <= 0) return;
+      const defenderIdx = defenderBoard.indexOf(defender);
+      const next = isTwoLane
+        ? defenderBoard.slice(defenderIdx + 1).find((u) => u.lane === defender.lane && u.health > 0)
+        : defenderBoard[defenderIdx + 1];
+      if (!next) return;
+      events.push({ type: 'relicProc', targetId: attacker.instanceId, relicId: 'gore-cleaver', name: 'Gore-Cleaver' });
+      applyDamage(next, overkill, 'attack');
+    };
+    cleaveSpillover(front, foe, enemies);
+    cleaveSpillover(foe, front, horde);
+
+    if (front.ability?.trigger === 'afterAttack') applyEffect(front, boardOf(front.side).indexOf(front), false);
+    if (foe.ability?.trigger === 'afterAttack') applyEffect(foe, boardOf(foe.side).indexOf(foe), false);
+
+    // `onHurt` reflect (issue #134: Steel-Whisker) resolves HERE — after
+    // the execute (Marrow-Snap) and cleave (Gore-Cleaver) blocks above,
+    // alongside the other post-clash triggers — deliberately, so the
+    // reflect's extra damage can never be mistaken for part of the
+    // crossing blow (Marrow-Snap compares against the clash hit only) and
+    // never feeds cleave-overkill (computed from the clash hit only,
+    // before this line runs). Only a blow that actually LANDED fires it:
+    // a shield-absorbed hit was never taken (see foeTookBlow/frontTookBlow
+    // above), and poison ticks below are rot, not blows. The reflect is
+    // fired symmetrically so an enemy-side thorns def (ADR-0004) works for
+    // free.
+    if (frontTookBlow && front.ability?.trigger === 'onHurt') applyTargetedEffect(front, foe);
+    if (foeTookBlow && foe.ability?.trigger === 'onHurt') applyTargetedEffect(foe, front);
+  };
+
   const waveCount = mode.kind === 'gauntlet' ? mode.gauntlet.waves.length : 1;
   for (let w = 0; w < waveCount && horde.length > 0; w++) {
     // 1-based wave number, matching the `waveStart`/`waveClear` events below
@@ -1065,16 +1238,25 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
     // for why this is a mutable closure variable rather than threaded as a
     // parameter through every call site.
     currentWave = w + 1;
-    enemies =
-      mode.kind === 'duel'
-        ? mode.opponent.units
-            .slice(0, BOARD_CAP)
-            .map((u) =>
-              instantiate(UNIT_DEFS[u.defId], 'gauntlet', u.relicIds ?? [], u.tier ?? 1)
-            )
-        : mode.gauntlet.waves[w].units.map((d) =>
-            instantiate(d, 'gauntlet', [], 1, enemyAttackScale(w), enemyHealthScale(w))
-          );
+    if (mode.kind === 'duel') {
+      const opponentUnits = mode.opponent.units.slice(0, BOARD_CAP);
+      enemies = opponentUnits.map((u, i) =>
+        instantiate(
+          UNIT_DEFS[u.defId],
+          'gauntlet',
+          u.relicIds ?? [],
+          u.tier ?? 1,
+          1,
+          1,
+          laneOf(i, opponentUnits.length)
+        )
+      );
+    } else {
+      const waveUnits = mode.gauntlet.waves[w].units;
+      enemies = waveUnits.map((d, i) =>
+        instantiate(d, 'gauntlet', [], 1, enemyAttackScale(w), enemyHealthScale(w), laneOf(i, waveUnits.length))
+      );
+    }
     events.push({ type: 'waveStart', wave: w + 1, enemies: enemies.map(view) });
     damageThisWave = 0;
     // First-hit relics (Glass Shard) fire anew each wave — clear the horde's
@@ -1118,115 +1300,21 @@ export function simulateCore(lineup: Lineup, mode: BattleMode): CoreOutput {
         }
       }
 
-      const front = horde[0];
-      const foe = enemies[0];
-      events.push({ type: 'clash', hordeId: front.instanceId, enemyId: foe.instanceId });
-
-      const bonusOf = (u: BattleUnit): number =>
-        u.firstAttackDone ? 0 : u.relics.reduce((s, r) => s + (r.firstHitBonusScalesWithWave ? currentWave : (r.firstHitBonus ?? 0)), 0);
-      const damageOut = front.attack + bonusOf(front);
-      const damageIn = foe.attack + bonusOf(foe);
-      front.firstAttackDone = true;
-      foe.firstAttackDone = true;
-
-      // Ward-Weaver's block charges (issue #56) absorb a whole attack hit
-      // outright, so this must resolve before applyDamage even runs — that
-      // also means it resolves before Tail-Charm's lethal-hit check inside
-      // applyDamage, which is the intended order: a fully-blocked hit was
-      // never lethal to begin with, so it should never consume Tail-Charm.
-      // `blockCharges` is a per-wave pool keyed by side (see its declaration
-      // above), not a per-unit flag — it follows whichever unit is
-      // currently front on that side, draining by 1 per hit that would
-      // otherwise land, until the wave's pool (set at `startOfWave`, sized
-      // by `Math.max` across that side's Ward-Weavers) is exhausted.
-      // Captured for Marrow-Snap's crossing check below: the execute must
-      // compare against the foe's health as it stood BEFORE this clash hit.
-      const foeHealthBeforeClash = foe.health;
-      // Whether each side's clash blow actually LANDED this tick — a
-      // Ward-Weaver-absorbed hit never touched the body, so it must not
-      // fire `onHurt` (issue #134) below.
-      let foeTookBlow = false;
-      let frontTookBlow = false;
-      if (blockCharges[foe.side] > 0) {
-        blockCharges[foe.side]--;
-        events.push({ type: 'shieldAbsorbed', targetId: foe.instanceId });
-      } else {
-        applyDamage(foe, damageOut, 'attack');
-        foeTookBlow = true;
-      }
-      if (blockCharges[front.side] > 0) {
-        blockCharges[front.side]--;
-        events.push({ type: 'shieldAbsorbed', targetId: front.instanceId });
-      } else {
-        applyDamage(front, damageIn, 'attack');
-        frontTookBlow = true;
-      }
-      damageThisWave += damageOut;
-
-      // Marrow-Snap: if THIS clash hit drove the foe from above the execute
-      // line to at or below it (executeThreshold of the foe's OWN max
-      // health), the foe dies outright instead of surviving on a sliver.
-      // CROSSING semantics, not a stateless health check (changed for the
-      // season launch, Jesper 2026-07-11): the old "any foe currently at or
-      // below the line dies to the next clash" let Blight-Witch's wave-start
-      // AoE poison pre-soften the whole wave under the line, turning every
-      // front tap into a kill — with a Marrow-Snap rotating on the front
-      // rat, enemies effectively fought with a third of their health bar.
-      // Now the executing blow itself must do the threshold-crossing work;
-      // a foe already under the line (poison chip, earlier clashes) can NOT
-      // be tap-executed — poison steals the crossing rather than enabling
-      // it. Still pure execute, no stat gain anywhere, foe-relative, so the
-      // compounding law holds exactly as before (see `executeThreshold` in
-      // data/relics.ts). Only fires if the foe actually survived this clash
-      // (a kill is a kill, not an execute) and skips a foe a surviveLethal
-      // relic just rescued to 1 health.
-      const executeRelic = front.relics.find((r) => r.executeThreshold !== undefined);
-      // Threshold from the unit's own innate trait (PvP) OR an equipped relic.
-      const executeThreshold = front.executeThreshold ?? executeRelic?.executeThreshold;
-      const executeCutoff = executeThreshold !== undefined ? foe.maxHealth * executeThreshold : 0;
-      if (executeThreshold !== undefined && foe.health > 0 && foeHealthBeforeClash > executeCutoff && foe.health <= executeCutoff) {
-        events.push({ type: 'relicProc', targetId: front.instanceId, relicId: executeRelic?.id ?? front.defId, name: executeRelic?.name ?? front.name });
-        // Finish the foe directly rather than routing through applyDamage:
-        // this is a kill-condition check, not a fresh attack, so it must not
-        // be blunted by the foe's own armor (damageReduction) the way a
-        // normal hit would be.
-        const finishing = foe.health;
-        foe.health = 0;
-        events.push({ type: 'damage', targetId: foe.instanceId, amount: finishing, remainingHealth: 0 });
-      }
-
-      // Gore-Cleaver: overkill damage that actually fells the front foe
-      // carries to the next enemy in line, once, no chaining. Guard against
-      // Tail-Charm (or any future surviveLethal) actually saving the foe —
-      // check post-applyDamage health, not just the raw overkill math.
-      if ((front.cleaveOverkill || front.relics.some((r) => r.cleaveOverkill)) && foe.health <= 0) {
-        // Carry what actually spilled past the kill, i.e. how far the foe's
-        // health went negative — not the raw swing, which armor may have
-        // blunted before it landed.
-        const overkill = -foe.health;
-        const next = enemies[1];
-        if (overkill > 0 && next) {
-          events.push({ type: 'relicProc', targetId: front.instanceId, relicId: 'gore-cleaver', name: 'Gore-Cleaver' });
-          applyDamage(next, overkill, 'attack');
+      // Milestone B2: single-lane mode resolves one clash (index 0 vs index
+      // 0, today's exact behavior); two-lane mode resolves lane 1 fully
+      // (clash through onHurt, via resolveClash) before lane 2 begins — see
+      // resolveClash's doc comment for why both paths share one
+      // implementation. The two-lane branch is unreachable until `twoLane`
+      // can actually be set (Milestone B2 PR3).
+      if (isTwoLane) {
+        for (const lane of [1, 2] as const) {
+          const front = horde.find((u) => u.lane === lane);
+          const foe = enemies.find((u) => u.lane === lane);
+          if (front && foe) resolveClash(front, foe);
         }
+      } else {
+        resolveClash(horde[0], enemies[0]);
       }
-
-      if (front.ability?.trigger === 'afterAttack') applyEffect(front, 0, false);
-      if (foe.ability?.trigger === 'afterAttack') applyEffect(foe, 0, false);
-
-      // `onHurt` reflect (issue #134: Steel-Whisker) resolves HERE — after
-      // the execute (Marrow-Snap) and cleave (Gore-Cleaver) blocks above,
-      // alongside the other post-clash triggers — deliberately, so the
-      // reflect's extra damage can never be mistaken for part of the
-      // crossing blow (Marrow-Snap compares against the clash hit only) and
-      // never feeds cleave-overkill (computed from the clash hit only,
-      // before this line runs). Only a blow that actually LANDED fires it:
-      // a shield-absorbed hit was never taken (see foeTookBlow/frontTookBlow
-      // above), and poison ticks below are rot, not blows. The reflect is
-      // fired symmetrically so an enemy-side thorns def (ADR-0004) works for
-      // free.
-      if (frontTookBlow && front.ability?.trigger === 'onHurt') applyTargetedEffect(front, foe);
-      if (foeTookBlow && foe.ability?.trigger === 'onHurt') applyTargetedEffect(foe, front);
 
       for (const board of [horde, enemies]) {
         for (const unit of [...board]) {

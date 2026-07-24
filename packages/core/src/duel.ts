@@ -37,12 +37,21 @@ export interface DuelResult {
  * - both wiped (simultaneous) -> `draw`;
  * - both still standing at the stalemate guard -> higher surviving health
  *   wins, then higher surviving attack, else `draw`.
+ *
+ * `options.twoLane` (Milestone B2, opt-in, default off): resolve both boards'
+ * front and back lanes simultaneously each tick instead of one clash per
+ * tick. Omitted/false reproduces today's behavior byte-for-byte.
  */
 export function simulateDuel(
   a: Lineup,
-  b: Lineup
+  b: Lineup,
+  options?: { twoLane?: boolean }
 ): { events: BattleEvent[]; result: DuelResult } {
-  const { events, result, enemySurvivors } = simulateCore(a, { kind: 'duel', opponent: b });
+  const { events, result, enemySurvivors } = simulateCore(a, {
+    kind: 'duel',
+    opponent: b,
+    twoLane: options?.twoLane,
+  });
   const survivorsA = result.survivors;
   const survivorsB = enemySurvivors;
   const healthA = survivorsA.reduce((s, u) => s + u.health, 0);
